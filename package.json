@@ -8,8 +8,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.mjs\"",
-    "hash-password": "node tools/hash-password.mjs"
+    "test": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.9"

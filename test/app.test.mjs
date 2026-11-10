@@ -1,4 +1,4 @@
-import { test, before, beforeEach, afterEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -7,8 +7,11 @@ import { readFile } from 'node:fs/promises';
 import { generateKeyPairSync, verify } from 'node:crypto';
 
 import { signSession, verifySession, readCookie, COOKIE_NAME } from '../lib/session.mjs';
-import { hashPassword, verifyPassword } from '../lib/password.mjs';
-import login from '../netlify/functions/login.mjs';
+import authStart from '../netlify/functions/auth-start.mjs';
+import authCallback from '../netlify/functions/auth-callback.mjs';
+import { allowedEmails } from '../lib/env.mjs';
+import { safeNext, STATE_COOKIE } from '../lib/oauth.mjs';
+import { verifyData } from '../lib/session.mjs';
 import stock from '../netlify/functions/stock.mjs';
 import refresh from '../netlify/functions/refresh.mjs';
 import { parseSheet, parseNumber, SheetFormatError } from '../lib/sheet.mjs';
@@ -38,17 +41,12 @@ class MemoryStore {
   async delete(k) { this.m.delete(k); }
 }
 
-let HASH_A;
-before(async () => { HASH_A = await hashPassword('correct horse battery'); });
 beforeEach(() => {
   globalThis.__TEST_STORE__ = new MemoryStore();
   process.env.SESSION_SECRET = SECRET;
-  process.env.USERS_JSON = JSON.stringify({ 'A@Example.com': HASH_A });
+  process.env.ALLOWED_EMAILS = 'A@Example.com';
 });
 
-const post = (path, body, headers = {}) =>
-  new Request(BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
-const cookieFrom = (res) => (res.headers.get('set-cookie') ?? '').split(';')[0];
 
 // ---------- session ----------
 test('session: ký/kiểm tra, chống sửa, hết hạn, sai secret', async () => {
@@ -64,46 +62,6 @@ test('session: ký/kiểm tra, chống sửa, hết hạn, sai secret', async ()
   assert.equal(readCookie('a=1; bm_session=abc; b=2', 'bm_session'), 'abc');
 });
 
-test('password: scrypt đúng/sai', async () => {
-  assert.equal(await verifyPassword('correct horse battery', HASH_A), true);
-  assert.equal(await verifyPassword('wrong', HASH_A), false);
-  assert.equal(await verifyPassword('x', 'không-phải-hash'), false);
-});
-
-// ---------- login ----------
-test('login: đúng mật khẩu -> cookie HttpOnly+Secure, email không phân biệt hoa thường', async () => {
-  const res = await login(post('/api/login', { email: ' a@example.COM ', password: 'correct horse battery' }));
-  assert.equal(res.status, 200);
-  const sc = res.headers.get('set-cookie');
-  assert.match(sc, /HttpOnly/); assert.match(sc, /Secure/); assert.match(sc, /SameSite=Lax/);
-  assert.ok(await verifySession(cookieFrom(res).split('=')[1], SECRET));
-});
-
-test('login: sai mật khẩu / email lạ cùng một phản hồi, email lạ không tạo bản ghi', async () => {
-  const bad = await login(post('/api/login', { email: 'a@example.com', password: 'nope' }));
-  const unknown = await login(post('/api/login', { email: 'ghost@example.com', password: 'nope' }));
-  assert.equal(bad.status, 401); assert.equal(unknown.status, 401);
-  assert.deepEqual(await bad.json(), await unknown.json());
-  assert.equal(globalThis.__TEST_STORE__.m.size, 1, 'chỉ email hợp lệ có bộ đếm');
-});
-
-test('login: sai 5 lần bị khoá, kể cả khi sau đó nhập đúng', async () => {
-  for (let i = 0; i < 5; i++) assert.equal((await login(post('/api/login', { email: 'a@example.com', password: 'nope' }))).status, 401);
-  const locked = await login(post('/api/login', { email: 'a@example.com', password: 'correct horse battery' }));
-  assert.equal(locked.status, 429);
-});
-
-test('login: chặn Origin khác, chặn body hỏng, chỉ nhận POST', async () => {
-  assert.equal((await login(post('/api/login', { email: 'a@example.com', password: 'x' }, { Origin: 'https://evil.com' }))).status, 403);
-  assert.equal((await login(new Request(BASE + '/api/login', { method: 'POST', body: '{' }))).status, 400);
-  assert.equal((await login(new Request(BASE + '/api/login'))).status, 405);
-});
-
-test('login: thiếu SESSION_SECRET -> 500 (không cấp cookie)', async () => {
-  delete process.env.SESSION_SECRET;
-  assert.equal((await login(post('/api/login', { email: 'a@example.com', password: 'correct horse battery' }))).status, 500);
-});
-
 // ---------- gate (edge) ----------
 const ctx = { next: async () => new Response('PAGE') };
 const gReq = (path, cookie) => new Request(BASE + path, { headers: cookie ? { cookie } : {} });
@@ -115,12 +73,12 @@ test('gate: chưa đăng nhập -> trang chuyển về login, API trả 401', as
   assert.equal(api.status, 401);
 });
 
-test('gate: cookie hợp lệ qua cổng; cookie của người đã bị xoá khỏi USERS_JSON thì không', async () => {
+test('gate: cookie hợp lệ qua cổng; cookie của người đã bị xoá khỏi ALLOWED_EMAILS thì không', async () => {
   const token = await signSession('a@example.com', SECRET);
   const ok = await gate(gReq('/', `${COOKIE_NAME}=${token}`), ctx);
   assert.equal(await ok.text(), 'PAGE');
   assert.equal(ok.headers.get('cache-control'), 'private, no-store');
-  process.env.USERS_JSON = '{}';
+  process.env.ALLOWED_EMAILS = '';
   assert.equal((await gate(gReq('/', `${COOKIE_NAME}=${token}`), ctx)).status, 302);
 });
 
@@ -133,7 +91,7 @@ test('gate: cookie ký bằng secret khác / thiếu secret (fail closed)', asyn
 
 test('gate: danh sách path được miễn đúng như thiết kế', () => {
   assert.equal(gateConfig.path, '/*');
-  assert.deepEqual(gateConfig.excludedPath.sort(), ['/api/login', '/favicon.svg', '/login.html', '/login.js', '/style.css']);
+  assert.deepEqual(gateConfig.excludedPath.sort(), ['/api/auth/callback', '/api/auth/start', '/favicon.svg', '/login.html', '/login.js', '/style.css']);
 });
 
 
@@ -241,7 +199,7 @@ function useGoogle(m, extra = {}) {
   });
 }
 afterEach(() => {
-  for (const k of ['PLAN_TAB', 'PLAN_BUFFER_PCT', 'PLAN_SOUTH_SHARE_PCT', 'SHEET_ID', 'SHEET_TAB', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY', 'GOOGLE_TOKEN_URL', 'GOOGLE_SHEETS_BASE', 'INCLUDE_COST', 'REFRESH_AFTER_SEC']) delete process.env[k];
+  for (const k of ['PLAN_TAB', 'PLAN_BUFFER_PCT', 'PLAN_SOUTH_SHARE_PCT', 'SHEET_ID', 'SHEET_TAB', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_PRIVATE_KEY', 'GOOGLE_TOKEN_URL', 'GOOGLE_SHEETS_BASE', 'INCLUDE_COST', 'REFRESH_AFTER_SEC', 'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET']) delete process.env[k];
 });
 
 test('google: JWT RS256 ký đúng, đúng scope readonly; request values đúng path/tham số', async () => {
@@ -384,9 +342,9 @@ test('refresh API: chỉ POST, cần cookie, chặn Origin lạ, bị cooldown n
   } finally { m.close(); }
 });
 
-test('stock API: người đã bị xoá khỏi USERS_JSON bị từ chối dù cookie còn hạn', async () => {
+test('stock API: người đã bị xoá khỏi ALLOWED_EMAILS bị từ chối dù cookie còn hạn', async () => {
   const req = await authed('/api/stock');
-  process.env.USERS_JSON = JSON.stringify({ 'other@example.com': HASH_A });
+  process.env.ALLOWED_EMAILS = 'other@example.com';
   assert.equal((await stock(req)).status, 401);
 });
 
@@ -678,4 +636,131 @@ test('frontend: TYPE "Other" ẩn mặc định; HTML có đủ phần tử mà 
       assert.ok(ids.has(id), `${f} cần #${id} nhưng index.html không có`);
     }
   }
+});
+
+// ================= Đăng nhập bằng Google =================
+const OAUTH_ID = '1234-abc.apps.googleusercontent.com';
+const setOauthEnv = () => { process.env.GOOGLE_OAUTH_CLIENT_ID = OAUTH_ID; process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'shh'; };
+const idToken = (claims) => 'h.' + Buffer.from(JSON.stringify(claims)).toString('base64url') + '.s';
+const goodClaims = (o = {}) => ({ aud: OAUTH_ID, iss: 'https://accounts.google.com', exp: Math.floor(Date.now() / 1000) + 600, email: 'A@Example.com', email_verified: true, ...o });
+const fakeGoogle = (claims, status = 200) => {
+  const calls = [];
+  const fn = async (url, init) => { calls.push({ url, body: new URLSearchParams(init.body) }); return new Response(JSON.stringify(claims ? { id_token: idToken(claims) } : {}), { status }); };
+  fn.calls = calls;
+  return fn;
+};
+const cookieOf = (res, name) => (res.headers.getSetCookie().find((c) => c.startsWith(name + '=')) ?? '').split(';')[0];
+// chạy bước 1 rồi trả về { state, cookie }
+async function startFlow(next = '/') {
+  const res = await authStart(new Request(BASE + '/api/auth/start?next=' + encodeURIComponent(next)));
+  const loc = new URL(res.headers.get('location'));
+  return { res, loc, state: loc.searchParams.get('state'), cookie: cookieOf(res, STATE_COOKIE) };
+}
+const callback = (qs, cookie, deps) => authCallback(new Request(BASE + '/api/auth/callback?' + qs, { headers: cookie ? { cookie } : {} }), deps);
+
+test('allowedEmails: tách theo dấu phẩy/chấm phẩy/xuống dòng/khoảng trắng, chữ thường, bỏ rác', () => {
+  assert.deepEqual([...allowedEmails(' A@x.com, b@y.vn;c@z.com\n d@w.com  rác ')].sort(), ['a@x.com', 'b@y.vn', 'c@z.com', 'd@w.com']);
+  assert.equal(allowedEmails(undefined).size, 0);
+});
+
+test('safeNext: chỉ nhận đường dẫn nội bộ', () => {
+  assert.equal(safeNext('/forecast?x=1'), '/forecast?x=1');
+  for (const bad of ['//evil.com', 'https://evil.com', '/\\evil.com', '/login.html', '/api/auth/start', '', null, 'javascript:alert(1)']) assert.equal(safeNext(bad), '/');
+});
+
+test('auth/start: chuyển sang Google đúng tham số, đặt cookie state HttpOnly ký sẵn', async () => {
+  setOauthEnv();
+  const { res, loc, state, cookie } = await startFlow('/forecast');
+  assert.equal(res.status, 302);
+  assert.equal(loc.origin + loc.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+  assert.equal(loc.searchParams.get('client_id'), OAUTH_ID);
+  assert.equal(loc.searchParams.get('redirect_uri'), BASE + '/api/auth/callback');
+  assert.equal(loc.searchParams.get('scope'), 'openid email');
+  assert.equal(loc.searchParams.get('response_type'), 'code');
+  assert.ok(state.length >= 24);
+  const sc = res.headers.get('set-cookie');
+  assert.match(sc, /HttpOnly/); assert.match(sc, /Secure/); assert.match(sc, /SameSite=Lax/);
+  assert.deepEqual(await verifyData(cookie.split('=')[1], SECRET), { s: state, n: '/forecast' });
+  assert.equal(await verifyData(cookie.split('=')[1], 'z'.repeat(48)), null);
+});
+
+test('auth/start: thiếu cấu hình -> về trang login kèm mã lỗi, không gọi Google', async () => {
+  let res = await authStart(new Request(BASE + '/api/auth/start'));
+  assert.match(res.headers.get('location'), /error=server_misconfigured/);
+  setOauthEnv(); delete process.env.SESSION_SECRET;
+  res = await authStart(new Request(BASE + '/api/auth/start'));
+  assert.match(res.headers.get('location'), /error=server_misconfigured/);
+});
+
+test('auth/callback: email trong danh sách (không phân biệt hoa thường) -> cookie phiên + quay về trang cũ', async () => {
+  setOauthEnv();
+  const { state, cookie } = await startFlow('/forecast');
+  const g = fakeGoogle(goodClaims());
+  const res = await callback(`code=C1&state=${state}`, cookie, { fetch: g });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), BASE + '/forecast');
+  const sess = cookieOf(res, COOKIE_NAME);
+  assert.deepEqual((await verifySession(sess.split('=')[1], SECRET)).email, 'a@example.com');
+  assert.match(res.headers.getSetCookie().find((c) => c.startsWith(COOKIE_NAME)), /HttpOnly.*Secure|Secure.*HttpOnly/);
+  assert.match(res.headers.getSetCookie().find((c) => c.startsWith(STATE_COOKIE)), /Max-Age=0/, 'xoá cookie state');
+  assert.equal(g.calls[0].body.get('code'), 'C1');
+  assert.equal(g.calls[0].body.get('client_secret'), 'shh');
+  assert.equal(g.calls[0].body.get('redirect_uri'), BASE + '/api/auth/callback');
+  // cookie vừa cấp qua được cổng
+  assert.equal(await (await gate(gReq('/', sess), ctx)).text(), 'PAGE');
+});
+
+test('auth/callback: email Google hợp lệ nhưng không có trong ALLOWED_EMAILS -> từ chối, không cấp cookie', async () => {
+  setOauthEnv();
+  const { state, cookie } = await startFlow();
+  const res = await callback(`code=C&state=${state}`, cookie, { fetch: fakeGoogle(goodClaims({ email: 'ghost@gmail.com' })) });
+  assert.match(res.headers.get('location'), /error=not_allowed/);
+  assert.equal(cookieOf(res, COOKIE_NAME), '');
+});
+
+test('auth/callback: chống CSRF — state sai / thiếu cookie / cookie ký sai / hết hạn', async () => {
+  setOauthEnv();
+  const { state, cookie } = await startFlow();
+  const g = fakeGoogle(goodClaims());
+  for (const [qs, ck] of [[`code=C&state=KHAC`, cookie], [`code=C&state=${state}`, ''], [`code=C`, cookie], [`state=${state}`, cookie], [`code=C&state=${state}`, STATE_COOKIE + '=rac.rac']]) {
+    const res = await callback(qs, ck, { fetch: g });
+    assert.match(res.headers.get('location'), /error=bad_state/, qs);
+    assert.equal(cookieOf(res, COOKIE_NAME), '');
+  }
+  assert.equal(g.calls.length, 0, 'không đổi code nếu state sai');
+  // cookie state bị dùng làm cookie phiên cũng vô hiệu
+  assert.equal(await verifySession(cookie.split('=')[1], SECRET), null);
+  const old = STATE_COOKIE + '=' + (await (await import('../lib/session.mjs')).signData({ s: state, n: '/' }, SECRET, 600, Date.now() - 3_600_000));
+  assert.match((await callback(`code=C&state=${state}`, old, { fetch: g })).headers.get('location'), /error=bad_state/);
+});
+
+test('auth/callback: id_token sai aud/iss/hết hạn/email chưa xác minh/Google từ chối/người dùng huỷ', async () => {
+  setOauthEnv();
+  const cases = [
+    [goodClaims({ aud: 'app-khac' }), 200, 'google_bad_token'],
+    [goodClaims({ iss: 'https://evil.com' }), 200, 'google_bad_token'],
+    [goodClaims({ exp: 1 }), 200, 'google_bad_token'],
+    [goodClaims({ email_verified: false }), 200, 'email_unverified'],
+    [goodClaims({ email_verified: 'true' }), 200, 'email_unverified'],
+    [null, 200, 'google_bad_token'],
+    [null, 400, 'google_rejected'],
+  ];
+  for (const [claims, status, code] of cases) {
+    const { state, cookie } = await startFlow();
+    const res = await callback(`code=C&state=${state}`, cookie, { fetch: fakeGoogle(claims, status) });
+    assert.match(res.headers.get('location'), new RegExp('error=' + code), JSON.stringify(claims));
+    assert.equal(cookieOf(res, COOKIE_NAME), '');
+  }
+  const { state, cookie } = await startFlow();
+  assert.match((await callback(`error=access_denied&state=${state}`, cookie)).headers.get('location'), /error=cancelled/);
+  const down = async () => { throw new Error('mạng'); };
+  const f = await startFlow();
+  assert.match((await callback(`code=C&state=${f.state}`, f.cookie, { fetch: down })).headers.get('location'), /error=google_unreachable/);
+});
+
+test('auth/callback: next độc hại bị thay bằng "/"', async () => {
+  setOauthEnv();
+  const { state, cookie } = await startFlow('//evil.com');
+  const res = await callback(`code=C&state=${state}`, cookie, { fetch: fakeGoogle(goodClaims()) });
+  assert.equal(res.headers.get('location'), BASE + '/');
 });

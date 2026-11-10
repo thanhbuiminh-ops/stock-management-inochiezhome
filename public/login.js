@@ -1,43 +1,25 @@
 (() => {
   'use strict';
-  const form = document.getElementById('form');
-  const err = document.getElementById('err');
-  const btn = document.getElementById('submit');
-
-  // Chỉ cho quay lại đường dẫn nội bộ (chống open redirect)
   const params = new URLSearchParams(location.search);
-  let next = params.get('next') || '/';
-  if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/login')) next = '/';
+  const next = params.get('next') || '/';
+  const btn = document.getElementById('google');
+  const err = document.getElementById('err');
+  // Chỉ cho quay lại đường dẫn nội bộ (server cũng kiểm tra lại)
+  if (next.startsWith('/') && !next.startsWith('//')) btn.href = '/api/auth/start?next=' + encodeURIComponent(next);
 
   const MESSAGES = {
-    invalid_credentials: 'Email hoặc mật khẩu không đúng.',
-    locked: 'Sai quá nhiều lần. Thử lại sau ít phút.',
-    server_misconfigured: 'Server chưa được cấu hình xong. Liên hệ người quản trị.',
+    not_allowed: 'Tài khoản Google này chưa được cấp quyền. Hãy liên hệ người quản trị để được thêm vào danh sách.',
+    cancelled: 'Bạn đã huỷ đăng nhập.',
+    bad_state: 'Phiên đăng nhập hết hạn hoặc không hợp lệ. Hãy thử lại.',
+    email_unverified: 'Email Google này chưa được xác minh.',
+    server_misconfigured: 'Server chưa được cấu hình xong (thiếu biến môi trường). Liên hệ người quản trị.',
+    google_rejected: 'Google từ chối yêu cầu đăng nhập. Kiểm tra cấu hình OAuth (Client ID/Secret, Redirect URI).',
+    google_bad_token: 'Không xác minh được phản hồi từ Google.',
+    google_unreachable: 'Không kết nối được tới Google. Thử lại sau.',
   };
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    err.hidden = true;
-    btn.disabled = true;
-    try {
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({
-          email: document.getElementById('email').value,
-          password: document.getElementById('password').value,
-        }),
-      });
-      if (res.ok) { location.replace(next); return; }
-      const data = await res.json().catch(() => ({}));
-      err.textContent = MESSAGES[data.error] || 'Đăng nhập thất bại (' + res.status + ').';
-      err.hidden = false;
-    } catch {
-      err.textContent = 'Không kết nối được tới server.';
-      err.hidden = false;
-    } finally {
-      btn.disabled = false;
-    }
-  });
+  const code = params.get('error');
+  if (code) {
+    err.textContent = MESSAGES[code] || 'Đăng nhập thất bại.';
+    err.hidden = false;
+  }
 })();

@@ -52,33 +52,32 @@ Biên gộp = (giá bán − COGS Main) ÷ giá bán; "Sau quà" = giá bán −
 3. Mở Google Sheet → **Share** → dán `client_email` trong file JSON → quyền **Viewer**.
 4. `SHEET_ID` là đoạn giữa trong URL: `https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`.
 
-### 2. Tạo tài khoản đăng nhập
-```bash
-npm install
-npm run hash-password -- ten@email.com     # nhập mật khẩu (ẩn), copy dòng "email": "scrypt$..."
-```
-Gộp các dòng thành 1 JSON: `{"a@gmail.com":"scrypt$...","b@gmail.com":"scrypt$..."}`
+### 2. Đăng nhập bằng Google (OAuth)
+Trong **cùng project** Google Cloud:
+1. **APIs & Services → OAuth consent screen**: nếu dùng Gmail cá nhân chọn *External*, trạng thái *Testing*, thêm các email vào **Test users**. Nếu tất cả người dùng cùng một Google Workspace thì có thể chọn *Internal*. Chỉ cần quyền cơ bản (openid, email).
+2. **APIs & Services → Credentials → Create credentials → OAuth client ID → Web application**.
+3. **Authorized redirect URIs** thêm đúng: `https://<site-của-bạn>.netlify.app/api/auth/callback` (đổi domain nếu bạn gắn domain riêng, và khai báo thêm URI mới).
+4. Copy **Client ID** và **Client secret**.
 
-### 3. Biến môi trường trên Netlify (Site configuration → Environment variables)
-Xem `.env.example`. Tối thiểu: `SESSION_SECRET` (`openssl rand -base64 48`), `USERS_JSON`, `SHEET_ID`, `GOOGLE_CLIENT_EMAIL`, `GOOGLE_PRIVATE_KEY` (dán nguyên `private_key` trong file JSON, giữ cả `\n`).
+### 3. Biến môi trường trên Netlify (Site configuration → Environment variables, ô **Production**, scope có **Functions**)
+Xem `.env.example`. Cần: `SESSION_SECRET` (chuỗi ngẫu nhiên ≥ 32 ký tự), `ALLOWED_EMAILS` (email Google được vào, ngăn cách bằng dấu phẩy), `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `SHEET_ID`, `GOOGLE_CLIENT_EMAIL`, `GOOGLE_PRIVATE_KEY` (dán nguyên `private_key` trong file JSON, giữ cả `\n`).
 
 ### 4. Deploy
-Kéo thả thư mục này lên Netlify, hoặc nối Git repo (build command để trống, publish `public`).
+**Không dùng kéo-thả (Netlify Drop):** Edge Function (cổng đăng nhập) chỉ được deploy qua Git hoặc Netlify CLI, kéo-thả có thể làm site lên mà không có cổng chặn. Đẩy code lên một repo GitHub **private** rồi nối vào Netlify (Add new project → Import an existing project; build command để trống, publish `public`; thêm biến môi trường trước khi deploy). Hoặc dùng `netlify deploy --prod` bằng CLI.
 Sau khi deploy: mở bằng **cửa sổ ẩn danh** → phải bị chuyển về trang đăng nhập; `/api/stock` khi chưa đăng nhập phải trả 401.
 
 ## Quản lý người dùng
-- Thêm người: tạo hash → thêm vào `USERS_JSON` → deploy lại.
-- Thu hồi: xoá email khỏi `USERS_JSON` → deploy lại. Cổng kiểm tra lại danh sách ở mỗi request nên cookie cũ của người đó mất hiệu lực ngay sau deploy.
-- Phiên đăng nhập 12 giờ. Sai mật khẩu 5 lần (email có trong danh sách) → khoá 15 phút.
+- Thêm người: thêm email vào `ALLOWED_EMAILS` → deploy lại (nếu dùng consent screen *External/Testing* thì thêm cả vào *Test users*).
+- Thu hồi: xoá email khỏi `ALLOWED_EMAILS` → deploy lại. Cổng kiểm tra lại danh sách ở mỗi request nên cookie cũ của người đó mất hiệu lực ngay sau deploy.
+- Phiên đăng nhập 12 giờ. Web không lưu mật khẩu; việc xác thực do Google đảm nhiệm (kèm xác thực 2 bước nếu tài khoản bật).
 
 ## Kiểm thử
-`npm test` — 51 test: session, mật khẩu, đăng nhập/khoá, edge gate, parser Sheet, Google client với server giả (kiểm chữ ký RS256 JWT), TTL/cooldown/giữ snapshot khi lỗi, API cần xác thực, ẩn COGS, **Forecast** (thêm/sửa/xoá, kiểm tra dữ liệu, xung đột 409, 12 người ghi đồng thời không mất dòng), nhu cầu Main + quà, các mức cảnh báo, **parser dữ liệu dán**, ghép tên gần giống, công thức CIR, và ràng buộc CSP của frontend (không innerHTML/inline script/style).
+`npm test` — 54 test: session, đăng nhập Google (state chống CSRF, kiểm aud/iss/hạn/email_verified, danh sách ALLOWED_EMAILS, chống open redirect), edge gate, parser Sheet, Google client với server giả (kiểm chữ ký RS256 JWT), TTL/cooldown/giữ snapshot khi lỗi, API cần xác thực, ẩn COGS, **Forecast** (thêm/sửa/xoá, kiểm tra dữ liệu, xung đột 409, 12 người ghi đồng thời không mất dòng), nhu cầu Main + quà, các mức cảnh báo, **parser dữ liệu dán**, ghép tên gần giống, công thức CIR, và ràng buộc CSP của frontend (không innerHTML/inline script/style).
 
 ## Chưa kiểm chứng (cần bạn xác nhận khi deploy)
+- Đăng nhập Google chưa thử với Google thật (test dùng Google giả); cần đăng nhập thử sau khi deploy.
 - Chưa chạy với Google Sheet thật và Netlify thật (chỉ test với server giả + trình duyệt headless chạy qua đúng các handler thật). Tên sản phẩm trong tab Plan của bạn chưa được đối chiếu với tên trong tab COGS thật nên tỉ lệ tự ghép đúng chưa biết trước.
 - Netlify Blobs: logic ghi có điều kiện (etag) kiểm theo định nghĩa kiểu của `@netlify/blobs` 11.1.9 và store giả; chưa chạy trên Blobs thật.
 - Edge Function chưa được bundler của Netlify build thử trong môi trường dựng (sandbox không tải được Deno); đã kiểm tra bằng esbuild và test logic.
 - Biến `AWS_LAMBDA_JS_RUNTIME` trong `netlify.toml` chưa xác minh; `NODE_VERSION=22` là phần chắc chắn cần (gói `@netlify/blobs` v11 yêu cầu Node ≥ 22.12).
 - Số tồn trong Sheet cập nhật weekly nên có thể cũ tới 7 ngày; cảnh báo dựa trên số đó.
-#   s t o c k - m a n a g e m e n t - i n o c h i e z h o m e  
- 
