@@ -1,6 +1,6 @@
 // Tab Forecast: các line đã lưu. Sửa trực tiếp (đổi quà, giá, SL, campaign…), tự lưu sau khi ngừng gõ ~0,7 giây.
 import { state, items, itemBySku, alertMonth, forecastLines, evalFor, hooks } from './state.js';
-import { $, el, thumb, toast, fmtNum, fmtMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips } from './ui.js';
+import { $, el, thumb, toast, fmtNum, fmtMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips, skuButton } from './ui.js';
 import { calcLine, DEFAULT_MAX_CIR } from './logic.js';
 import { lineCard, lineIssues, clean, setLineStatus } from './linecard.js';
 import { postForecast } from './api.js';
@@ -142,7 +142,7 @@ function renderSkuTable(rows) {
     const tdImg = el('td', { class: 'img' }); tdImg.append(thumb(it, 'timg'));
     tbody.append(el('tr', {},
       tdImg,
-      el('td', { class: 'name' }, el('div', { class: 'sku', text: it.sku }), el('div', { class: 'pname2', text: it.name })),
+      el('td', { class: 'name' }, skuButton(it.sku), el('div', { class: 'pname2', text: it.name })),
       el('td', { text: role, title: `Main ${fmtNum(ev.main)} + quà ${fmtNum(ev.gift)}` }),
       el('td', { class: 'num', text: fmtNum(ev.qty) }), el('td', { class: 'num', text: fmtNum(it.total) }),
       el('td', { class: 'num', text: fmtNum(it.north) }), el('td', { class: 'num', text: fmtNum(it.south) }), el('td', { class: 'num', text: fmtNum(ev.needSouth) }),

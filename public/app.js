@@ -1,6 +1,6 @@
 // Điều phối chung: tải dữ liệu, tab, banner, và tab "Tồn kho". Plan / Forecast nằm ở plan.js / forecast.js.
 import { state, hooks, items, itemBySku, alertMonth, forecastLines, evalFor } from './state.js';
-import { $, el, thumb, fmtTime, fmtNum, fmtMoney, fmtCompactMoney, monthLabel, LEVEL, ALERT_LEVELS, alertText, toast } from './ui.js';
+import { $, el, thumb, fmtTime, fmtNum, fmtMoney, fmtCompactMoney, monthLabel, LEVEL, ALERT_LEVELS, alertText, toast, skuButton, openLightbox } from './ui.js';
 import { DEFAULT_MAX_CIR } from './logic.js';
 import { initPlan, renderPlan } from './plan.js';
 import { initForecast, renderForecast, forecastBusy, forecastCsv } from './forecast.js';
@@ -183,42 +183,55 @@ function renderCategoryOptions() {
   sel.value = state.category;
 }
 
-function whRow(label, value, kind, maxVal, needTick) {
-  const fill = el('div', { class: 'fill ' + kind });
-  fill.style.width = value > 0 ? Math.max(4, value / maxVal * 100) + '%' : '0';
-  const track = el('div', { class: 'track' }, fill);
-  if (needTick) {
-    const tick = el('i', { class: 'tick', title: 'Mức kho này cần cho nhu cầu: ' + fmtNum(needTick) });
-    tick.style.left = Math.min(100, needTick / maxVal * 100) + '%';
-    track.append(tick);
-  }
-  return el('div', { class: 'wh' }, el('span', { class: 'lbl', text: label }), track, el('span', { class: 'val' + (value === 0 ? ' zero' : ''), text: fmtNum(value) }));
+// Danh sách ảnh cho khung xem lớn (chỉ các sản phẩm đang hiển thị và có ảnh)
+const galleryOf = (list) => list.filter((it) => it.image).map((it) => ({
+  src: it.image, title: it.name || titleOf(it), sku: it.sku, meta: `Bắc ${fmtNum(it.north)} · Nam ${fmtNum(it.south)} · Tổng ${fmtNum(it.total)}`,
+}));
+
+function stockCell(label, value, extra = '', cls = '') {
+  return el('div', { class: cls }, el('span', { class: 'l', text: label }), el('span', { class: 'n ' + (value === 0 ? 'zero' : extra), text: fmtNum(value) }));
 }
 
 function renderCards(list) {
-  const maxVal = Math.max(1, ...list.map((it) => Math.max(it.north ?? 0, it.south ?? 0, evalFor(it.sku, alertMonth())?.needSouth ?? 0)));
   const hasCost = !!state.data?.snapshot?.hasCost;
+  const showPlan = hasAlertPlan();
+  const gallery = galleryOf(list);
   const grid = el('div', { class: 'grid' });
   for (const it of list) {
     const ev = evalFor(it.sku, alertMonth());
     const cls = LEVEL[levelOf(it)].cls;
-    const t = thumb(it, 'thumb');
-    if (ev) t.append(el('span', { class: 'badge ' + cls, text: LEVEL[ev.level].label }));
+
+    let media;
+    if (it.image) {
+      const img = el('img', { src: it.image, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' });
+      media = el('button', { type: 'button', class: 'pimg', 'aria-label': 'Xem ảnh lớn: ' + titleOf(it) }, img, el('span', { class: 'zoom', 'aria-hidden': 'true', text: '⤢' }));
+      media.addEventListener('click', () => openLightbox(gallery, gallery.findIndex((g) => g.sku === it.sku)));
+      img.addEventListener('error', () => { media.replaceChildren(); media.classList.add('noimg'); media.disabled = true; if (ev) media.append(el('span', { class: 'tag ' + cls, text: LEVEL[ev.level].label })); });
+    } else media = el('div', { class: 'pimg noimg' });
+    if (ev) media.append(el('span', { class: 'tag ' + cls, text: LEVEL[ev.level].label }));
+
     const body = el('div', { class: 'pbody' },
-      el('div', { class: 'pname', text: titleOf(it), title: it.name || titleOf(it) }),
-      el('div', { class: 'psku', text: it.sku + ' · ' + categoryOf(it), title: it.sku }),
-      whRow('Bắc', it.north, 'n', maxVal, 0),
-      whRow('Nam', it.south, 's', maxVal, ev?.needSouth ?? 0),
-      el('div', { class: 'ptotal' }, 'Tổng ', el('b', { text: fmtNum(it.total) })));
-    if (ev) body.append(el('div', { class: 'pplan' }, el('div', { class: 'msg ' + cls, text: alertText(it, ev) })));
-    else if (hasAlertPlan()) body.append(el('div', { class: 'pplan' }, el('div', { class: 'msg mute', text: 'Không có trong Forecast ' + monthLabel(alertMonth()) })));
-    if (hasCost && it.cogs != null) body.append(el('div', { class: 'pcost' }, 'COGS ', el('b', { text: fmtMoney(it.cogs) }), ' · Giá trị tồn ', el('b', { text: fmtMoney(stockValue(it)) })));
-    grid.append(el('article', { class: 'pcard ' + cls }, t, body));
+      el('div', { class: 'pcat', text: categoryOf(it), title: categoryOf(it) }),
+      el('div', { class: 'pname', text: it.name || titleOf(it), title: it.name || titleOf(it) }),
+      skuButton(it.sku),
+      el('div', { class: 'pstock' },
+        stockCell('Bắc', it.north),
+        stockCell('Nam', it.south, ev && ev.gapSouth > 0 ? 'low' : ''),
+        stockCell('Tổng', it.total, '', 't')));
+    if (showPlan) {
+      const msg = ev ? alertText(it, ev) : 'Không có trong Forecast ' + monthLabel(alertMonth());
+      body.append(el('div', { class: 'pplan ' + (ev ? cls : 'mute'), text: msg, title: msg }));
+    }
+    if (hasCost) body.append(el('div', { class: 'pcost' },
+      el('div', {}, el('span', { class: 'l', text: 'COGS (₫)' }), el('span', { class: 'v', text: it.cogs != null ? fmtNum(Math.round(it.cogs)) : '–' })),
+      el('div', {}, el('span', { class: 'l', text: 'Giá trị tồn (₫)' }), el('span', { class: 'v', text: stockValue(it) != null ? fmtNum(Math.round(stockValue(it))) : '–', title: stockValue(it) != null ? fmtMoney(stockValue(it)) : '' }))));
+    grid.append(el('article', { class: 'pcard' }, media, body));
   }
   $('board').replaceChildren(grid);
 }
 
 function renderTable(list) {
+  const gallery = galleryOf(list);
   const hasCost = !!state.data?.snapshot?.hasCost;
   const showPlan = hasAlertPlan();
   const heads = [['', 'img'], ['SKU / Sản phẩm', ''], ['TYPE', ''], ['Category', ''], ['Bắc', 'num'], ['Nam', 'num'], ['Tổng', 'num']];
@@ -228,10 +241,18 @@ function renderTable(list) {
   const tbody = el('tbody');
   for (const it of list) {
     const ev = evalFor(it.sku, alertMonth());
-    const tdImg = el('td', { class: 'img' }); tdImg.append(thumb(it, 'timg'));
+    const tdImg = el('td', { class: 'img' });
+    const th = thumb(it, 'timg');
+    if (it.image) {
+      th.setAttribute('role', 'button'); th.setAttribute('tabindex', '0'); th.setAttribute('aria-label', 'Xem ảnh lớn: ' + titleOf(it));
+      const open = () => openLightbox(gallery, gallery.findIndex((g) => g.sku === it.sku));
+      th.addEventListener('click', open);
+      th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    }
+    tdImg.append(th);
     const cells = [
       tdImg,
-      el('td', { class: 'name' }, el('div', { class: 'sku', text: it.sku }), el('div', { class: 'pname2', text: it.name || titleOf(it) })),
+      el('td', { class: 'name' }, skuButton(it.sku), el('div', { class: 'pname2', text: it.name || titleOf(it) })),
       el('td', { text: it.type }), el('td', { text: categoryOf(it) }),
       el('td', { class: 'num', text: fmtNum(it.north) }), el('td', { class: 'num', text: fmtNum(it.south) }), el('td', { class: 'num', text: fmtNum(it.total) }),
     ];

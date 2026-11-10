@@ -2,6 +2,7 @@
 
 Website xem tồn kho dạng trực quan, đọc dữ liệu từ Google Sheet **"Inochi BMT - Pricing Frame"** (tab `COGS`), host trên Netlify, chỉ tài khoản được cấp mới vào được.
 Mặc định ẩn các sản phẩm có TYPE = `Other`; mọi TYPE khác (kể cả TYPE mới bạn thêm sau này) tự hiện thành nút lọc, bấm để bật/tắt.
+**Giao diện:** theme sáng theo inochi.vn (thanh xanh ngọc, navy, thẻ trắng), font Quicksand tự host trong `public/fonts` (giấy phép OFL kèm theo). Thẻ sản phẩm cùng một kích thước; Bắc / Nam / Tổng hiển thị dạng số; bấm **mã SKU** để copy; bấm **ảnh** để xem lớn (← → chuyển ảnh, Esc đóng); rê chuột vào thẻ để làm nổi bật.
 Có 3 tab: **Tồn kho** (thẻ sản phẩm có ảnh, Bắc/Nam, COGS, giá trị tồn, cảnh báo theo Forecast), **Plan** (dán dữ liệu từ Google Sheet → ghép tên sản phẩm → Confirm) và **Forecast** (các line đã lưu, sửa trực tiếp).
 
 ## Kiến trúc
@@ -29,7 +30,7 @@ Trình duyệt ──cookie đăng nhập──> Edge gate ───────
 **Tab Forecast** — mỗi line sửa trực tiếp: đổi Main, giá bán, campaign, tháng, SL dự kiến, Max CIR, thêm/xoá/đổi quà (sản phẩm, số lượng, giá vốn). **Tự lưu** sau ~0,7 giây khi ngừng gõ; hai người sửa cùng một line thì người sau nhận cảnh báo "đã bị người khác sửa" thay vì ghi đè. Xem được theo *line* hoặc gộp theo *SKU* (nhu cầu Main + quà, tồn Bắc/Nam, độ phủ).
 
 **CIR** = Σ(số lượng quà × giá vốn quà) ÷ Giá bán (RSP); **Over** khi CIR (chưa làm tròn) > Max CIR. Max CIR mặc định theo ảnh Sheet bạn gửi: `BAU` 4%, `MINI SPIKE` 5%; campaign khác (vd `MINPRICE`) chưa có số nên hiện "Chưa có Max CIR" cho tới khi bạn nhập tay trên line.
-Biên gộp = (giá bán − COGS Main) ÷ giá bán; "Sau quà" = giá bán − COGS Main − vốn quà (**chưa** trừ phí sàn/ads/voucher). Công thức *Biên Ròng / Lợi nhuận / Vượt Quota* của tool khác bạn dùng **chưa được tái tạo** vì chưa biết công thức.
+%GM = (giá bán − COGS Main) ÷ giá bán; "Sau quà" = giá bán − COGS Main − vốn quà (**chưa** trừ phí sàn/ads/voucher). Công thức *Biên Ròng / Lợi nhuận / Vượt Quota* của tool khác bạn dùng **chưa được tái tạo** vì chưa biết công thức.
 
 **Cảnh báo tồn thấp** chỉ áp cho SKU có trong Forecast của **tháng tới** (theo giờ Việt Nam). Nhu cầu mỗi SKU = Σ(SL dự kiến của Main) + Σ(SL dự kiến × số quà) — quà tặng cũng trừ tồn. Line chưa nhập *SL dự kiến* thì chưa tính nhu cầu. So với tồn hiện có trong Sheet:
 | Mức | Điều kiện |

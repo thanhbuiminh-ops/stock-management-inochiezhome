@@ -123,9 +123,9 @@ export function lineCard(line, opts = {}) {
         el('span', { class: 'badge ' + cls, title: c.maxCir === null ? 'Chưa có Max CIR cho campaign này — nhập ở ô Max CIR' : 'CIR so với trần Max CIR ' + fmtPct(c.maxCir) },
           c.status === 'over' ? `Over +${fmtMoney(c.overAmount)}` : c.status === 'pass' ? `Pass (≤ ${fmtPct(c.maxCir)})` : 'Chưa có Max CIR')),
       c.mainCogs !== null
-        ? el('div', { class: 'sum-row mute', title: 'Biên gộp = (Giá bán − COGS Main) ÷ Giá bán. Lãi sau quà chưa trừ phí sàn, ads, voucher.' },
-          'Biên gộp ', el('b', { text: fmtPct(c.gmPct) }), ' · Sau quà ', el('b', { class: c.afterGifts < 0 ? 'neg' : '', text: fmtMoney(c.afterGifts) }), ` (${fmtPct(c.afterGiftsPct)})`)
-        : el('div', { class: 'sum-row mute', text: 'Chưa có COGS Main để tính biên gộp' }));
+        ? el('div', { class: 'sum-row mute', title: '%GM = (Giá bán − COGS Main) ÷ Giá bán. "Sau quà" chưa trừ phí sàn, ads, voucher.' },
+          '%GM ', el('b', { text: fmtPct(c.gmPct) }), ' · Sau quà ', el('b', { class: c.afterGifts < 0 ? 'neg' : '', text: fmtMoney(c.afterGifts) }), ` (${fmtPct(c.afterGiftsPct)})`)
+        : el('div', { class: 'sum-row mute', text: 'Chưa có COGS Main để tính %GM' }));
     const issues = lineIssues(line);
     const notes = foot.querySelector('.lc-notes');
     const bits = [];

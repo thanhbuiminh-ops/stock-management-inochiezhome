@@ -91,7 +91,7 @@ test('gate: cookie ký bằng secret khác / thiếu secret (fail closed)', asyn
 
 test('gate: danh sách path được miễn đúng như thiết kế', () => {
   assert.equal(gateConfig.path, '/*');
-  assert.deepEqual(gateConfig.excludedPath.sort(), ['/api/auth/callback', '/api/auth/start', '/favicon.svg', '/login.html', '/login.js', '/style.css']);
+  assert.deepEqual(gateConfig.excludedPath.sort(), ['/api/auth/callback', '/api/auth/start', '/favicon.svg', '/fonts/*', '/login.html', '/login.js', '/style.css']);
 });
 
 

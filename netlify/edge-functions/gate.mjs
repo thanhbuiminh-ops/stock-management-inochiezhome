@@ -28,5 +28,5 @@ export default async (request, context) => {
 // Các file của trang đăng nhập phải mở được khi chưa login.
 export const config = {
   path: '/*',
-  excludedPath: ['/api/auth/start', '/api/auth/callback', '/login.html', '/login.js', '/style.css', '/favicon.svg'],
+  excludedPath: ['/api/auth/start', '/api/auth/callback', '/login.html', '/login.js', '/style.css', '/favicon.svg', '/fonts/*'],
 };

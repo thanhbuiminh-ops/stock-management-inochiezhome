@@ -157,3 +157,81 @@ export function numberInput({ value, onValue, allowNull = false, decimal = false
   input.addEventListener('blur', () => { const v = read(); input.value = allowNull && v === null && !input.value.trim() ? '' : fmt(v); });
   return suffix ? el('span', { class: 'with-suffix' }, input, el('span', { class: 'suffix', text: suffix })) : input;
 }
+
+
+// ---------- copy SKU ----------
+export async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* trình duyệt chặn -> thử cách cũ */ }
+  try {
+    const ta = el('textarea', { readonly: '', 'aria-hidden': 'true' });
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.append(ta); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
+}
+
+// Nút hiện mã SKU; bấm vào là copy vào clipboard.
+export function skuButton(sku) {
+  const ic = el('span', { class: 'ic', 'aria-hidden': 'true', text: '⧉' });
+  const b = el('button', { type: 'button', class: 'psku', title: 'Bấm để copy SKU' }, el('span', { text: sku }), ic);
+  b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (await copyText(sku)) {
+      b.classList.add('copied'); ic.textContent = '✓';
+      toast('Đã copy SKU: ' + sku, 'ok');
+      setTimeout(() => { b.classList.remove('copied'); ic.textContent = '⧉'; }, 1500);
+    } else toast('Không copy được. Hãy bôi đen và copy thủ công: ' + sku, 'error');
+  });
+  return b;
+}
+
+// ---------- xem ảnh lớn ----------
+// entries: [{ src, title, sku, meta }]; index: ảnh mở đầu. Esc / bấm nền / ✕ để đóng, ← → để chuyển ảnh.
+let lightbox = null;
+export function closeLightbox() { if (lightbox) lightbox.close(); }
+export function openLightbox(entries, index = 0) {
+  if (!entries.length) return;
+  closeLightbox();
+  const opener = document.activeElement;
+  let i = Math.min(Math.max(0, index), entries.length - 1);
+  const img = el('img', { class: 'lb-img', alt: '', referrerpolicy: 'no-referrer' });
+  const title = el('div', { class: 't' });
+  const skuBox = el('div');
+  const sub = el('div', { class: 'n' });
+  const x = el('button', { type: 'button', class: 'lb-x', 'aria-label': 'Đóng', text: '✕' });
+  const prev = el('button', { type: 'button', class: 'lb-nav lb-prev', 'aria-label': 'Ảnh trước', text: '‹' });
+  const next = el('button', { type: 'button', class: 'lb-nav lb-next', 'aria-label': 'Ảnh sau', text: '›' });
+  const root = el('div', { class: 'lb', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Xem ảnh sản phẩm' }, img, el('div', { class: 'lb-cap' }, title, skuBox, sub), x, prev, next);
+  const show = () => {
+    const e = entries[i];
+    img.src = e.src; img.alt = e.title;
+    title.textContent = e.title;
+    skuBox.replaceChildren(skuButton(e.sku));
+    sub.textContent = `${i + 1} / ${entries.length}` + (e.meta ? ' · ' + e.meta : '');
+    prev.hidden = next.hidden = entries.length < 2;
+  };
+  const go = (d) => { i = (i + d + entries.length) % entries.length; show(); };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft' && entries.length > 1) go(-1);
+    else if (e.key === 'ArrowRight' && entries.length > 1) go(1);
+  };
+  function close() {
+    document.removeEventListener('keydown', onKey);
+    document.body.classList.remove('noscroll');
+    root.remove(); lightbox = null;
+    if (opener && opener.isConnected) opener.focus();
+  }
+  img.addEventListener('error', () => { title.textContent = 'Không tải được ảnh này'; });
+  root.addEventListener('click', (e) => { if (e.target === root) close(); });
+  x.addEventListener('click', close);
+  prev.addEventListener('click', () => go(-1));
+  next.addEventListener('click', () => go(1));
+  document.addEventListener('keydown', onKey);
+  document.body.classList.add('noscroll');
+  document.body.append(root);
+  show(); x.focus();
+  lightbox = { close };
+}
