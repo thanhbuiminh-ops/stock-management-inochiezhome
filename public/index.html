@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Visual Stock</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="appbar">
+    <div class="brand">Inochi <span>Visual Stock</span></div>
+    <nav class="tabs" role="tablist" aria-label="Màn hình">
+      <button type="button" role="tab" data-tab="stock">Tồn kho</button>
+      <button type="button" role="tab" data-tab="plan">Plan</button>
+      <button type="button" role="tab" data-tab="forecast">Forecast <span id="fcCount" class="count" hidden></span></button>
+    </nav>
+    <div class="actions">
+      <span id="freshness" class="fresh">Đang tải…</span>
+      <button id="refresh" type="button" class="btn">Làm mới</button>
+      <button id="csv" type="button" class="btn">Xuất CSV</button>
+      <span id="user" class="user"></span>
+      <button id="logout" type="button" class="btn ghost">Đăng xuất</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <datalist id="campaignList"></datalist>
+
+  <!-- ===== Tồn kho ===== -->
+  <section id="tab-stock" class="view" hidden>
+    <div class="toolbar">
+      <input id="q" type="search" placeholder="Tìm SKU / tên sản phẩm" autocomplete="off">
+      <select id="category" aria-label="Category"><option value="">Mọi Category</option></select>
+      <select id="status" aria-label="Cảnh báo theo Forecast">
+        <option value="all">Mọi trạng thái</option>
+        <option value="alert">Cần chú ý (theo Forecast)</option>
+        <option value="out">Hết hàng</option>
+        <option value="short">Thiếu so plan</option>
+        <option value="south">Kho Nam thiếu</option>
+        <option value="tight">Sát plan</option>
+        <option value="ok">Đủ plan</option>
+        <option value="none">Không có trong Forecast</option>
+      </select>
+      <select id="sort" aria-label="Sắp xếp">
+        <option value="attention">Cần chú ý trước</option>
+        <option value="total-asc">Tồn thấp → cao</option>
+        <option value="total-desc">Tồn cao → thấp</option>
+        <option value="name">Tên A → Z</option>
+      </select>
+      <span class="seg" role="group" aria-label="Kiểu hiển thị">
+        <button type="button" data-view="cards">Thẻ</button>
+        <button type="button" data-view="table">Bảng</button>
+      </span>
+      <button id="toggleCharts" type="button" class="btn toggle" title="Ẩn/hiện biểu đồ">Biểu đồ</button>
+    </div>
+    <div id="typeChips" class="chips" aria-label="Lọc theo TYPE"></div>
+    <div id="kpis" class="kpis" aria-label="Tổng quan"></div>
+    <section id="charts" class="charts">
+      <div class="panel">
+        <h2>Tồn theo Category <span class="legend"><i class="dot north"></i>Kho Bắc <i class="dot south"></i>Kho Nam</span></h2>
+        <div id="catChart"></div>
+      </div>
+      <div class="panel">
+        <h2 id="alertTitle">Cảnh báo theo Forecast</h2>
+        <div id="statusChart"></div>
+      </div>
+    </section>
+    <main id="board"></main>
+    <p id="empty" class="muted center" hidden>Không có sản phẩm khớp bộ lọc.</p>
+  </section>
+
+  <!-- ===== Plan: dán dữ liệu, ghép tên, xác nhận ===== -->
+  <section id="tab-plan" class="view" hidden>
+    <div class="panel paste">
+      <h2>1 · Dán dữ liệu từ Google Sheet</h2>
+      <p class="hint">Copy vùng bảng trong Sheet (các cột <b>Campaign Type · Loại (Main/Gift) · Tên sản phẩm · Số lượng · RSP (Main)/COGS (Gift)</b>, có thêm <b>Max CIR</b> càng tốt) rồi dán vào ô dưới. Không cần mã SKU — web tự ghép theo tên, bạn chỉ cần xem lại những dòng "Gần giống" hoặc "Chưa khớp".</p>
+      <textarea id="paste" rows="6" spellcheck="false" placeholder="Dán ở đây (Ctrl/Cmd + V)…"></textarea>
+      <div class="paste-row">
+        <label class="lc-field inline"><span class="lc-lbl">Tháng áp dụng</span><input id="pasteMonth" type="month" class="txt-in"></label>
+        <button id="analyze" type="button" class="btn primary">Phân tích &amp; ghép sản phẩm</button>
+        <button id="manualAdd" type="button" class="btn">+ Thêm line thủ công</button>
+      </div>
+      <div id="pasteWarn" class="note-warn" hidden></div>
+    </div>
+    <h2 class="step">2 · Kiểm tra &amp; Confirm</h2>
+    <div id="reviewBar"></div>
+    <div id="review"></div>
+  </section>
+
+  <!-- ===== Forecast: line đã lưu, sửa trực tiếp ===== -->
+  <section id="tab-forecast" class="view" hidden>
+    <div class="toolbar">
+      <input id="fcQ" type="search" placeholder="Tìm sản phẩm / SKU (Main hoặc quà)" autocomplete="off">
+      <select id="fcMonth" aria-label="Tháng"></select>
+      <select id="fcCampaign" aria-label="Campaign"></select>
+      <label class="check"><input id="fcOnlyAlert" type="checkbox"> Chỉ line cần chú ý</label>
+      <span class="seg" role="group" aria-label="Kiểu xem">
+        <button type="button" data-fcview="lines">Theo line</button>
+        <button type="button" data-fcview="sku">Theo SKU</button>
+      </span>
+      <span id="fcLineTools" class="tools">
+        <button id="fcExpand" type="button" class="btn ghost sm">Mở hết</button>
+        <button id="fcCollapse" type="button" class="btn ghost sm">Thu gọn hết</button>
+      </span>
+    </div>
+    <div id="fcKpis" class="kpis"></div>
+    <div id="fcBody"></div>
+  </section>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

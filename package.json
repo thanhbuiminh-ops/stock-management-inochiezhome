@@ -1,0 +1,17 @@
+{
+  "name": "sheet-stock-board",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Website visual tồn kho đọc từ Google Sheet, deploy Netlify, chỉ tài khoản được cấp mới xem được.",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "hash-password": "node tools/hash-password.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^11.1.9"
+  }
+}
