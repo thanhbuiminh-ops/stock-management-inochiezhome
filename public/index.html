@@ -30,46 +30,84 @@
   <datalist id="campaignList"></datalist>
 
   <!-- ===== Tồn kho ===== -->
-  <section id="tab-stock" class="view" hidden>
-    <div class="toolbar">
-      <input id="q" type="search" placeholder="Tìm SKU / tên sản phẩm" autocomplete="off">
-      <select id="category" aria-label="Category"><option value="">Mọi Category</option></select>
-      <select id="status" aria-label="Cảnh báo theo Forecast">
-        <option value="all">Mọi trạng thái</option>
-        <option value="alert">Cần chú ý (theo Forecast)</option>
-        <option value="out">Hết hàng</option>
-        <option value="short">Thiếu so plan</option>
-        <option value="south">Kho Nam thiếu</option>
-        <option value="tight">Sát plan</option>
-        <option value="ok">Đủ plan</option>
-        <option value="none">Không có trong Forecast</option>
-      </select>
-      <select id="sort" aria-label="Sắp xếp">
-        <option value="attention">Cần chú ý trước</option>
-        <option value="total-asc">Tồn thấp → cao</option>
-        <option value="total-desc">Tồn cao → thấp</option>
-        <option value="name">Tên A → Z</option>
-      </select>
-      <span class="seg" role="group" aria-label="Kiểu hiển thị">
-        <button type="button" data-view="cards">Thẻ</button>
-        <button type="button" data-view="table">Bảng</button>
-      </span>
-      <button id="toggleCharts" type="button" class="btn toggle" title="Ẩn/hiện biểu đồ">Biểu đồ</button>
+  <section id="tab-stock" class="view stock-view-wide" hidden>
+    <div class="stock-layout">
+      <aside id="filters" class="filters" aria-label="Bộ lọc sản phẩm">
+        <div class="f-head">
+          <b>Bộ lọc</b>
+          <button id="fReset" type="button" class="link" hidden>Xoá hết</button>
+          <button id="fClose" type="button" class="f-close mobile-only" aria-label="Đóng bộ lọc">✕</button>
+        </div>
+        <section class="f-block"><h3>TYPE</h3><div id="typeChips" class="chips"></div></section>
+        <section class="f-block">
+          <h3>Cảnh báo theo Forecast</h3>
+          <select id="status" aria-label="Cảnh báo theo Forecast">
+            <option value="all">Mọi trạng thái</option>
+            <option value="alert">Cần chú ý (theo Forecast)</option>
+            <option value="out">Hết hàng</option>
+            <option value="short">Thiếu so plan</option>
+            <option value="south">Kho Nam thiếu</option>
+            <option value="tight">Sát plan</option>
+            <option value="ok">Đủ plan</option>
+            <option value="none">Không có trong Forecast</option>
+          </select>
+        </section>
+        <div id="ranges"></div>
+        <section class="f-block">
+          <h3>Category <button id="catClear" type="button" class="link" hidden>Bỏ chọn</button></h3>
+          <input id="catQ" type="search" placeholder="Tìm category…" autocomplete="off" aria-label="Tìm category">
+          <div id="catList" class="checklist"></div>
+        </section>
+        <details id="moreFilters" class="f-more">
+          <summary>Lọc theo tồn kho &amp; giá trị tồn</summary>
+          <div id="rangesMore"></div>
+        </details>
+        <section class="f-block">
+          <h3>Dữ liệu</h3>
+          <select id="dataFlag" aria-label="Lọc theo dữ liệu thiếu">
+            <option value="">Tất cả</option>
+            <option value="noimg">Thiếu ảnh</option>
+            <option value="img">Có ảnh</option>
+            <option value="nocogs">Thiếu COGS</option>
+          </select>
+        </section>
+        <div class="f-foot mobile-only"><button id="fApply" type="button" class="btn primary">Xem sản phẩm</button></div>
+      </aside>
+
+      <div class="stock-main">
+        <div class="resultbar">
+          <button id="fOpen" type="button" class="btn mobile-only" aria-controls="filters" aria-expanded="false">Bộ lọc <span id="fBadge" class="count" hidden></span></button>
+          <input id="q" type="search" placeholder="Tìm SKU / tên (gõ không dấu được)" autocomplete="off">
+          <span id="resultCount" class="result-count"></span>
+          <select id="sort" aria-label="Sắp xếp">
+            <option value="attention">Cần chú ý trước</option>
+            <option value="total-asc">Tồn thấp → cao</option>
+            <option value="total-desc">Tồn cao → thấp</option>
+            <option value="name">Tên A → Z</option>
+          </select>
+          <span class="seg" role="group" aria-label="Kiểu hiển thị">
+            <button type="button" data-view="cards">Thẻ</button>
+            <button type="button" data-view="table">Bảng</button>
+          </span>
+          <button id="toggleCharts" type="button" class="btn toggle" title="Ẩn/hiện biểu đồ">Biểu đồ</button>
+        </div>
+        <div id="activeFilters" class="active-filters" hidden></div>
+        <div id="kpis" class="kpis" aria-label="Tổng quan"></div>
+        <section id="charts" class="charts">
+          <div class="panel">
+            <h2>Tồn theo Category <span class="legend"><i class="dot north"></i>Kho Bắc <i class="dot south"></i>Kho Nam</span></h2>
+            <div id="catChart"></div>
+          </div>
+          <div class="panel">
+            <h2 id="alertTitle">Cảnh báo theo Forecast</h2>
+            <div id="statusChart"></div>
+          </div>
+        </section>
+        <main id="board"></main>
+        <p id="empty" class="muted center" hidden>Không có sản phẩm khớp bộ lọc.</p>
+      </div>
     </div>
-    <div id="typeChips" class="chips" aria-label="Lọc theo TYPE"></div>
-    <div id="kpis" class="kpis" aria-label="Tổng quan"></div>
-    <section id="charts" class="charts">
-      <div class="panel">
-        <h2>Tồn theo Category <span class="legend"><i class="dot north"></i>Kho Bắc <i class="dot south"></i>Kho Nam</span></h2>
-        <div id="catChart"></div>
-      </div>
-      <div class="panel">
-        <h2 id="alertTitle">Cảnh báo theo Forecast</h2>
-        <div id="statusChart"></div>
-      </div>
-    </section>
-    <main id="board"></main>
-    <p id="empty" class="muted center" hidden>Không có sản phẩm khớp bộ lọc.</p>
+    <div id="fBackdrop" class="f-backdrop" hidden></div>
   </section>
 
   <!-- ===== Plan: dán dữ liệu, ghép tên, xác nhận ===== -->
@@ -92,7 +130,7 @@
 
   <!-- ===== Forecast: line đã lưu, sửa trực tiếp ===== -->
   <section id="tab-forecast" class="view" hidden>
-    <div class="toolbar">
+    <div class="toolbar sticky">
       <input id="fcQ" type="search" placeholder="Tìm sản phẩm / SKU (Main hoặc quà)" autocomplete="off">
       <select id="fcMonth" aria-label="Tháng"></select>
       <select id="fcCampaign" aria-label="Campaign"></select>

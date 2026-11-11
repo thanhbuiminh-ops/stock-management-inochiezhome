@@ -175,3 +175,24 @@ export function calcLine(line, getItem) {
     afterGiftsPct: cogs !== null && price > 0 ? (price - cogs - giftCost) / price : null,
   };
 }
+
+
+// Nhập nhanh số tiền/số lượng: "50000", "50.000", "50k", "1,5tr", "2 triệu", "1.2 tỷ", "200000đ"
+export function parseMoney(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const s = String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toLowerCase().replace(/[₫\s]/g, '').replace(/(\d)d$/, '$1');
+  const m = s.match(/^(\d[\d.,]*)(k|nghin|ngan|tr|trieu|m|ty|ti|b)?$/);
+  if (!m) return null;
+  const n = parseNumber(m[1]);
+  if (n === null) return null;
+  const mult = { k: 1e3, nghin: 1e3, ngan: 1e3, tr: 1e6, trieu: 1e6, m: 1e6, ty: 1e9, ti: 1e9, b: 1e9 }[m[2]] ?? 1;
+  return mult === 1 ? n : Math.round(n * mult);
+}
+
+// Giá trị có nằm trong khoảng [min, max] không (đầu mút nào để trống = không giới hạn).
+// Đang lọc mà sản phẩm không có giá trị (ví dụ chưa có COGS) thì loại — vì không so sánh được.
+export function rangeOk(value, { min = null, max = null } = {}) {
+  if (min === null && max === null) return true;
+  if (value === null || value === undefined || Number.isNaN(value)) return false;
+  return (min === null || value >= min) && (max === null || value <= max);
+}

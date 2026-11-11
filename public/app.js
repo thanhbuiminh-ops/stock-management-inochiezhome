@@ -3,6 +3,7 @@ import { state, hooks, items, itemBySku, alertMonth, forecastLines, evalFor } fr
 import { $, el, thumb, fmtTime, fmtNum, fmtMoney, fmtCompactMoney, monthLabel, LEVEL, ALERT_LEVELS, alertText, toast, skuButton, openLightbox } from './ui.js';
 import { DEFAULT_MAX_CIR } from './logic.js';
 import { initPlan, renderPlan } from './plan.js';
+import { initFilters, renderFilters, matchItem, typeKey, categoryOf, levelOf, stockValue } from './filters.js';
 import { initForecast, renderForecast, forecastBusy, forecastCsv } from './forecast.js';
 
 const STALE_SEC = 15 * 60;   // website không đọc lại được Sheet quá ngưỡng này -> cảnh báo
@@ -19,13 +20,9 @@ $('sort').value = state.sort;
 // ---------- dữ liệu dẫn xuất (tab Tồn kho) ----------
 const plan = () => state.data?.plan ?? null;
 const hasAlertPlan = () => !!plan()?.evaluations?.[alertMonth()];
-const levelOf = (it) => evalFor(it.sku, alertMonth())?.level ?? 'none';
-const typeKey = (it) => (it.type || '').trim().toLowerCase() || '(trống)';
-const categoryOf = (it) => it.category || '(chưa phân loại)';
 const titleOf = (it) => it.shortName || it.name || it.sku;
 const total = (it) => it.total ?? 0;
 const cmpName = (a, b) => titleOf(a).localeCompare(titleOf(b), 'vi', { numeric: true });
-const stockValue = (it) => (it.cogs != null && it.total != null ? it.cogs * it.total : null);
 
 const SORTERS = {
   attention: (a, b) => LEVEL[levelOf(a)].rank - LEVEL[levelOf(b)].rank
@@ -36,14 +33,7 @@ const SORTERS = {
 };
 
 function visibleItems() {
-  const q = state.q.trim().toLowerCase();
-  return items().filter((it) => {
-    if (state.hiddenTypes.has(typeKey(it))) return false;
-    if (state.category && categoryOf(it) !== state.category) return false;
-    const lv = levelOf(it);
-    if (state.status === 'alert' ? !ALERT_LEVELS.has(lv) : state.status !== 'all' && lv !== state.status) return false;
-    return !q || it.sku.toLowerCase().includes(q) || it.name.toLowerCase().includes(q) || it.shortName.toLowerCase().includes(q);
-  }).sort(SORTERS[state.sort]);
+  return items().filter((it) => matchItem(it)).sort(SORTERS[state.sort]);
 }
 
 // ---------- banner + độ mới ----------
@@ -159,30 +149,6 @@ function renderAlertChart(list) {
   $('statusChart').replaceChildren(el('div', { class: 'whstat' }, bar), ...rows);
 }
 
-function renderChips() {
-  const counts = new Map();
-  for (const it of items()) {
-    const k = typeKey(it);
-    const c = counts.get(k) ?? { label: it.type.trim() || '(trống)', n: 0 };
-    c.n++; counts.set(k, c);
-  }
-  const chips = [...counts.entries()].sort((a, b) => (a[0] === 'other') - (b[0] === 'other') || b[1].n - a[1].n).map(([k, c]) => {
-    const on = !state.hiddenTypes.has(k);
-    const btn = el('button', { type: 'button', class: 'chip ' + (on ? 'on' : 'off'), 'aria-pressed': String(on), text: c.label + ' (' + c.n + ')', title: on ? 'Bấm để ẩn TYPE này' : 'Bấm để hiện TYPE này' });
-    btn.addEventListener('click', () => { if (on) state.hiddenTypes.add(k); else state.hiddenTypes.delete(k); render(); });
-    return btn;
-  });
-  $('typeChips').replaceChildren(el('span', { class: 'chips-label', text: 'TYPE' }), ...chips);
-}
-
-function renderCategoryOptions() {
-  const sel = $('category');
-  const cats = [...new Set(items().filter((it) => !state.hiddenTypes.has(typeKey(it))).map(categoryOf))].sort((a, b) => a.localeCompare(b, 'vi'));
-  if (state.category && !cats.includes(state.category)) state.category = '';
-  sel.replaceChildren(el('option', { value: '', text: 'Mọi Category' }), ...cats.map((c) => el('option', { value: c, text: c })));
-  sel.value = state.category;
-}
-
 // Danh sách ảnh cho khung xem lớn (chỉ các sản phẩm đang hiển thị và có ảnh)
 const galleryOf = (list) => list.filter((it) => it.image).map((it) => ({
   src: it.image, title: it.name || titleOf(it), sku: it.sku, meta: `Bắc ${fmtNum(it.north)} · Nam ${fmtNum(it.south)} · Tổng ${fmtNum(it.total)}`,
@@ -264,8 +230,8 @@ function renderTable(list) {
 }
 
 function renderStock() {
-  renderChips(); renderCategoryOptions();
   const list = visibleItems();
+  renderFilters(list.length, items().filter((it) => !state.hiddenTypes.has(typeKey(it))).length);
   renderKpis(list); renderCategoryChart(list); renderAlertChart(list);
   $('charts').hidden = !state.showCharts;
   $('toggleCharts').classList.toggle('on', state.showCharts);
@@ -340,11 +306,16 @@ function exportCsv() {
   download('visual-stock-' + day + '.csv', rows);
 }
 
+// Chiều cao thanh trên cùng (để các thanh dính bên dưới bám đúng vị trí; trên điện thoại thanh trên cùng không dính)
+const appbar = document.querySelector('.appbar');
+const syncBarHeight = () => document.documentElement.style.setProperty('--appbar-h', (getComputedStyle(appbar).position === 'sticky' ? appbar.offsetHeight : 0) + 'px');
+syncBarHeight();
+new ResizeObserver(syncBarHeight).observe(appbar);
+
 // ---------- sự kiện ----------
 const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
-on('q', 'input', (e) => { state.q = e.target.value; render(); });
-on('category', 'change', (e) => { state.category = e.target.value; render(); });
-on('status', 'change', (e) => { state.status = e.target.value; render(); });
+let qTimer;
+on('q', 'input', (e) => { state.q = e.target.value; clearTimeout(qTimer); qTimer = setTimeout(render, 150); });
 on('sort', 'change', (e) => {
   state.sort = e.target.value;
   try { localStorage.setItem('sb_sort', state.sort); } catch { /* bỏ qua */ }
@@ -378,6 +349,7 @@ on('logout', 'click', async () => {
   location.href = '/login.html';
 });
 
+initFilters(() => render());
 initPlan();
 initForecast();
 await load();

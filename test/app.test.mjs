@@ -600,7 +600,7 @@ test('logic.calcLine: CIR = Σ(qty×vốn quà) / giá bán; Over khi CIR chưa 
 });
 
 // ================= frontend: cú pháp + quy tắc CSP =================
-const PUBLIC_JS = ['api', 'app', 'forecast', 'linecard', 'logic', 'plan', 'state', 'ui', 'login'].map((n) => `public/${n}.js`);
+const PUBLIC_JS = ['api', 'app', 'filters', 'forecast', 'linecard', 'logic', 'plan', 'state', 'ui', 'login'].map((n) => `public/${n}.js`);
 test('frontend: mọi file JS đúng cú pháp module', async () => {
   for (const f of PUBLIC_JS) {
     const src = await readFile(new URL('../' + f, import.meta.url), 'utf8');
@@ -631,10 +631,11 @@ test('frontend: TYPE "Other" ẩn mặc định; HTML có đủ phần tử mà 
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   for (const f of PUBLIC_JS) {
     const src = await readFile(new URL('../' + f, import.meta.url), 'utf8');
-    for (const [, id] of src.matchAll(/\$\('#([A-Za-z][\w-]*)'\)/g)) {
-      if (f.endsWith('login.js')) continue;
-      assert.ok(ids.has(id), `${f} cần #${id} nhưng index.html không có`);
-    }
+    if (f.endsWith('login.js')) continue;
+    const used = [...src.matchAll(/\$\('#?([A-Za-z][\w-]*)'\)/g), ...src.matchAll(/\bon\('([A-Za-z][\w-]*)',/g)].map((m) => m[1]);
+    const dynamic = new Set(['ranges']); // vẫn phải có trong HTML; liệt kê để dễ đọc
+    for (const id of used) assert.ok(ids.has(id), `${f} cần #${id} nhưng index.html không có`);
+    void dynamic;
   }
 });
 
@@ -763,4 +764,25 @@ test('auth/callback: next độc hại bị thay bằng "/"', async () => {
   const { state, cookie } = await startFlow('//evil.com');
   const res = await callback(`code=C&state=${state}`, cookie, { fetch: fakeGoogle(goodClaims()) });
   assert.equal(res.headers.get('location'), BASE + '/');
+});
+
+// ================= Bộ lọc tồn kho =================
+test('logic.parseMoney: nhập nhanh k / tr / tỷ, dấu chấm-phẩy kiểu VN', () => {
+  const cases = { '50000': 50000, '50.000': 50000, '50k': 50000, '300K': 300000, '1,5tr': 1500000, '1.5tr': 1500000, '1,2tr': 1200000, '2 triệu': 2000000,
+    '1.2 tỷ': 1200000000, '200000đ': 200000, '200.000 ₫': 200000, '2 nghìn': 2000, '1.234.567': 1234567, '0': 0, '12,5': 12.5 };
+  for (const [input, want] of Object.entries(cases)) assert.equal(L.parseMoney(input), want, input);
+  for (const bad of ['', 'abc', 'k', '-5', '1..2', null, undefined]) assert.equal(L.parseMoney(bad), null, String(bad));
+  assert.equal(L.parseMoney(123), 123);
+});
+
+test('logic.rangeOk: đầu mút bao gồm, để trống = không giới hạn, thiếu giá trị thì bị loại khi đang lọc', () => {
+  assert.equal(L.rangeOk(5, {}), true);
+  assert.equal(L.rangeOk(null, {}), true, 'không lọc thì giữ cả SP thiếu giá trị');
+  assert.equal(L.rangeOk(null, { min: 1, max: null }), false);
+  assert.equal(L.rangeOk(100, { min: 100, max: 200 }), true);
+  assert.equal(L.rangeOk(200, { min: 100, max: 200 }), true);
+  assert.equal(L.rangeOk(201, { min: 100, max: 200 }), false);
+  assert.equal(L.rangeOk(99, { min: 100, max: null }), false);
+  assert.equal(L.rangeOk(0, { min: null, max: 0 }), true);
+  assert.equal(L.rangeOk(500, { min: 200, max: 100 }), false, 'Từ > Đến thì không khớp gì');
 });

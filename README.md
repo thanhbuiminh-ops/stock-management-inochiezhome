@@ -45,6 +45,17 @@ Trình duyệt ──cookie đăng nhập──> Edge gate ───────
 
 > ⚠️ "Cập nhật lúc …" trên dashboard là lúc **website đọc Sheet**, không phải lúc Boxme cập nhật tồn. Độ tươi thật của số tồn phụ thuộc cách Sheet nhận dữ liệu Boxme (tab Tồn Kho, Apps Script…).
 
+## Bộ lọc tab Tồn kho
+
+Thanh kết quả (tìm kiếm, sắp xếp, Thẻ/Bảng) và bảng bộ lọc bên trái đều **dính (sticky)** khi cuộn. Trên mobile bảng lọc là drawer ("Bộ lọc").
+
+- **COGS**: nhập khoảng Từ–Đến (để trống = không giới hạn) hoặc bấm preset (≤100k, 100k–500k, 500k–1tr, 1tr–3tr, ≥3tr). Gõ tắt được: `50k`, `1,5tr`, `2 triệu`, `1.2 tỷ`. Chỉ nhập "Đến" = "giá thấp hơn X".
+- **Category**: chọn nhiều, có số lượng (đếm theo các bộ lọc khác đang bật) và ô tìm nhanh.
+- **Tồn kho & giá trị tồn**: lọc theo Giá trị tồn, Tổng tồn, Tồn Bắc, Tồn Nam (nhóm "Lọc theo tồn kho & giá trị tồn", tự mở khi có bộ lọc).
+- **Dữ liệu**: lọc SKU thiếu ảnh / có ảnh / thiếu COGS.
+- Quy tắc: khi một khoảng giá đang bật, SKU **không có giá trị đó** (vd thiếu COGS) bị loại khỏi kết quả.
+- Các bộ lọc đang bật hiện thành chip phía trên danh sách (✕ để bỏ từng cái, "Xoá tất cả bộ lọc").
+
 ## Cài đặt (làm 1 lần)
 
 ### 1. Service account để đọc Sheet

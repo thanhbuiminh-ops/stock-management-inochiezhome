@@ -2,7 +2,8 @@
 export const state = {
   data: null, error: null, tab: 'stock',
   // Tồn kho
-  q: '', category: '', status: 'all', sort: 'attention', view: 'cards', showCharts: true, hiddenTypes: new Set(['other']),
+  q: '', categories: new Set(), status: 'all', dataFlag: '',
+  ranges: { cogs: { min: null, max: null }, value: { min: null, max: null }, total: { min: null, max: null }, north: { min: null, max: null }, south: { min: null, max: null } }, sort: 'attention', view: 'cards', showCharts: true, hiddenTypes: new Set(['other']),
   // Plan (dữ liệu dán, chưa lưu)
   staged: [], pasteWarnings: [],
   // Forecast
