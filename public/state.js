@@ -3,11 +3,14 @@ export const state = {
   data: null, error: null, tab: 'stock',
   // Tồn kho
   q: '', categories: new Set(), status: 'all', dataFlag: '',
-  ranges: { cogs: { min: null, max: null }, value: { min: null, max: null }, total: { min: null, max: null }, north: { min: null, max: null }, south: { min: null, max: null } }, sort: 'attention', view: 'cards', showCharts: true, hiddenTypes: new Set(['other']),
+  ranges: { cogs: { min: null, max: null }, value: { min: null, max: null }, total: { min: null, max: null }, north: { min: null, max: null }, south: { min: null, max: null } }, sort: 'attention', view: 'cards', showCharts: true, hiddenTypes: new Set(),
   // Plan (dữ liệu dán, chưa lưu)
-  staged: [], pasteWarnings: [],
+  staged: [], pasteWarnings: [], stagedChannel: '',
+  manual: { open: false, q: '', sel: new Map(), includeOther: false, campaign: '' },
   // Forecast
-  fcQ: '', fcMonth: '', fcCampaign: '', fcOnlyAlert: false, fcView: 'lines', fcCollapsed: new Set(),
+  fcQ: '', fcMonth: '', fcCampaign: '', fcChannel: '', fcOnlyAlert: false, fcView: 'lines', fcCollapsed: new Set(),
+  // Overall (tổng hợp theo channel / SKU)
+  ov: { month: '', channels: new Set(), campaign: '', category: '', q: '', sort: 'gmv', top: 20, onlyAlert: false },
 };
 
 // Các hàm do app.js gắn vào để module con gọi ngược lại mà không import vòng.

@@ -157,14 +157,22 @@ export function autoMatch(name, items) {
 }
 
 // ---------- tính toán một line ----------
-// line = { price, maxCir, campaign, main:{sku}, gifts:[{qty,cost}] }
+// Deal = Main (số lượng `main.qty` trong 1 deal) + các SKU gộp thêm `combo[{sku,qty}]`. Line cũ không có qty/combo -> 1 SKU × 1.
+export const componentsOf = (l) => [{ sku: l.main?.sku, qty: l.main?.qty ?? 1 }, ...(l.combo ?? []).map((c) => ({ sku: c.sku, qty: c.qty ?? 1 }))];
+export const isCombo = (l) => (l.combo?.length ?? 0) > 0 || (l.main?.qty ?? 1) > 1;
+// "SKU1×2 + SKU2" — dùng cho CSV, nhận diện trùng lặp
+export const dealLabel = (l) => componentsOf(l).map((c) => c.sku + (c.qty > 1 ? '×' + c.qty : '')).join(' + ');
+
+// line = { price, maxCir, campaign, main:{sku,qty}, combo:[{sku,qty}], gifts:[{qty,cost}] }
 export function calcLine(line, getItem) {
   const giftCost = line.gifts.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.cost) || 0), 0);
   const price = Number(line.price) || 0;
   const cir = price > 0 ? giftCost / price : null;
   const maxCir = line.maxCir ?? defaultMaxCir(line.campaign);
   const over = cir !== null && maxCir !== null && cir > maxCir;
-  const cogs = getItem(line.main?.sku)?.cogs ?? null;
+  // COGS của cả deal = Σ số lượng × COGS từng SKU; thiếu COGS ở bất kỳ SKU nào thì không tính (tránh %GM sai)
+  const comps = componentsOf(line).map((c) => ({ ...c, cogs: getItem(c.sku)?.cogs ?? null }));
+  const cogs = comps.every((c) => c.cogs !== null) ? comps.reduce((s, c) => s + c.qty * c.cogs, 0) : null;
   return {
     giftCost, cir, maxCir, over,
     overAmount: over ? Math.round(giftCost - maxCir * price) : 0,
@@ -195,4 +203,59 @@ export function rangeOk(value, { min = null, max = null } = {}) {
   if (min === null && max === null) return true;
   if (value === null || value === undefined || Number.isNaN(value)) return false;
   return (min === null || value >= min) && (max === null || value <= max);
+}
+
+
+// ---------- channel ----------
+export const CHANNELS = [
+  { key: 'shopee', label: 'Shopee' },
+  { key: 'tiktok', label: 'TikTok' },
+  { key: 'website', label: 'Website' },
+];
+export const DEFAULT_CHANNEL = 'shopee';   // line cũ (lưu trước khi có trường channel) coi là Shopee
+export const channelOf = (l) => (CHANNELS.some((c) => c.key === l?.channel) ? l.channel : DEFAULT_CHANNEL);
+export const channelLabel = (k) => CHANNELS.find((c) => c.key === k)?.label ?? k;
+
+// ---------- tổng hợp Overall ----------
+// lines: các line Forecast đã lọc. Chỉ line CÓ "SL dự kiến" mới tính vào GMV (line chưa nhập SL được đếm riêng trong `missing`).
+// GMV (dự kiến) = Giá bán × SL Main dự kiến. Quà tặng không có doanh thu, chỉ có vốn (SL × Σ qty×vốn).
+// "Lãi gộp sau quà" = Σ (Giá bán − COGS Main − vốn quà mỗi Main) × SL, CHƯA trừ phí sàn/ads/voucher; chỉ tính line có COGS Main.
+export function overallModel(lines, getItem) {
+  const t = { lines: lines.length, missing: 0, gmv: 0, units: 0, giftCost: 0, gmvCogs: 0, gross: 0, linesCogs: 0, combos: 0 };
+  const byChannel = {}, byCampaign = {}, bySku = {}, byCategory = {};
+  const add = (map, key, init) => (map[key] ??= init());
+  for (const l of lines) {
+    const u = l.units;
+    if (!(u > 0)) { t.missing++; continue; }
+    const price = Number(l.price) || 0;
+    const ch = channelOf(l);
+    const gmv = price * u;
+    const perUnitGift = l.gifts.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.cost) || 0), 0);
+    const gift = perUnitGift * u;
+    const comps = componentsOf(l).map((c) => ({ ...c, it: getItem(c.sku) }));
+    const dealCogs = comps.every((c) => c.it?.cogs != null) ? comps.reduce((s, c) => s + c.qty * c.it.cogs, 0) : null;
+    if (isCombo(l)) t.combos++;
+    t.gmv += gmv; t.units += u; t.giftCost += gift;
+    if (dealCogs !== null) { t.gmvCogs += gmv; t.gross += (price - dealCogs - perUnitGift) * u; t.linesCogs++; }
+    const c = add(byChannel, ch, () => ({ key: ch, gmv: 0, units: 0, lines: 0, giftCost: 0 }));
+    c.gmv += gmv; c.units += u; c.lines++; c.giftCost += gift;
+    const cp = add(byCampaign, l.campaign, () => ({ key: l.campaign, gmv: 0, units: 0, by: {} }));
+    cp.gmv += gmv; cp.units += u; cp.by[ch] = (cp.by[ch] ?? 0) + gmv;
+    // Doanh thu của deal có nhiều SKU được chia cho từng SKU theo tỉ lệ (số lượng × COGS); thiếu COGS thì chia theo số lượng.
+    // (Chỉ là cách phân bổ để xem theo SKU/category; tổng GMV, channel và campaign không đổi.)
+    const byCost = comps.every((x) => x.it?.cogs > 0);
+    const w = comps.map((x) => (byCost ? x.qty * x.it.cogs : x.qty));
+    const wSum = w.reduce((s, x) => s + x, 0) || 1;
+    comps.forEach((x, i) => {
+      const share = w[i] / wSum;
+      const part = gmv * share;
+      const s = add(bySku, x.sku, () => ({ sku: x.sku, gmv: 0, units: 0, lines: 0, giftCost: 0, by: {} }));
+      s.gmv += part; s.units += u * x.qty; s.lines++; s.giftCost += gift * share; s.by[ch] = (s.by[ch] ?? 0) + part;
+      const cat = x.it?.category || 'Chưa phân loại';
+      const g = add(byCategory, cat, () => ({ key: cat, gmv: 0, units: 0, by: {} }));
+      g.gmv += part; g.units += u * x.qty; g.by[ch] = (g.by[ch] ?? 0) + part;
+    });
+  }
+  const desc = (o) => Object.values(o).sort((a, b) => b.gmv - a.gmv);
+  return { totals: t, byChannel: desc(byChannel), byCampaign: desc(byCampaign), bySku: desc(bySku), byCategory: desc(byCategory) };
 }

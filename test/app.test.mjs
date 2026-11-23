@@ -600,7 +600,114 @@ test('logic.calcLine: CIR = Σ(qty×vốn quà) / giá bán; Over khi CIR chưa 
 });
 
 // ================= frontend: cú pháp + quy tắc CSP =================
-const PUBLIC_JS = ['api', 'app', 'filters', 'forecast', 'linecard', 'logic', 'plan', 'state', 'ui', 'login'].map((n) => `public/${n}.js`);
+test('channel: line cũ không có channel -> Shopee; channel lạ bị từ chối; lưu và đọc lại đúng', async () => {
+  const base = { month: '2026-12', campaign: 'bau', price: 100000, units: 10, main: { sku: 'A' }, gifts: [] };
+  assert.equal(sanitizeLine(base).channel, 'shopee');
+  assert.equal(sanitizeLine({ ...base, channel: 'TikTok' }).channel, 'tiktok');
+  assert.equal(sanitizeLine({ ...base, channel: 'website' }).channel, 'website');
+  assert.throws(() => sanitizeLine({ ...base, channel: 'lazada' }), ForecastError);
+  assert.equal(L.channelOf({}), 'shopee');
+  assert.equal(L.channelOf({ channel: 'tiktok' }), 'tiktok');
+  assert.equal(L.channelOf({ channel: 'zzz' }), 'shopee');
+  assert.equal(L.channelLabel('tiktok'), 'TikTok');
+});
+
+test('logic.overallModel: GMV = giá × SL theo channel/campaign/SKU/category; line chưa có SL chỉ được đếm riêng', () => {
+  const items = { A: { sku: 'A', cogs: 40000, category: 'Bình' }, B: { sku: 'B', cogs: null, category: 'Cốc' }, G: { sku: 'G', cogs: 5000, category: 'Quà' } };
+  const get = (s) => items[s];
+  const mk = (o) => ({ campaign: 'BAU', channel: 'shopee', price: 100000, units: 10, main: { sku: 'A' }, gifts: [], ...o });
+  const lines = [
+    mk({ gifts: [{ sku: 'G', qty: 2, cost: 5000 }] }),                       // Shopee A: GMV 1.000.000, quà 100.000
+    mk({ channel: 'tiktok', price: 90000, units: 20 }),                      // TikTok A: 1.800.000
+    mk({ channel: 'website', campaign: 'MINI SPIKE', main: { sku: 'B' }, price: 50000, units: 4 }), // Website B: 200.000, không COGS
+    mk({ units: null }),                                                     // chưa nhập SL
+    mk({ units: 0, channel: 'tiktok' }),                                     // SL = 0 cũng chưa tính
+  ];
+  const m = L.overallModel(lines, get);
+  assert.equal(m.totals.lines, 5);
+  assert.equal(m.totals.missing, 2);
+  assert.equal(m.totals.gmv, 1_000_000 + 1_800_000 + 200_000);
+  assert.equal(m.totals.units, 34);
+  assert.equal(m.totals.giftCost, 10 * 2 * 5000);
+  assert.deepEqual(m.byChannel.map((c) => [c.key, c.gmv]), [['tiktok', 1_800_000], ['shopee', 1_000_000], ['website', 200_000]]);
+  assert.deepEqual(m.bySku.map((s) => [s.sku, s.gmv]), [['A', 2_800_000], ['B', 200_000]]);
+  assert.deepEqual(m.bySku[0].by, { shopee: 1_000_000, tiktok: 1_800_000 });
+  assert.deepEqual(m.byCampaign.map((c) => [c.key, c.gmv]), [['BAU', 2_800_000], ['MINI SPIKE', 200_000]]);
+  assert.deepEqual(m.byCategory.map((c) => [c.key, c.gmv]), [['Bình', 2_800_000], ['Cốc', 200_000]]);
+  // lãi gộp sau quà: chỉ line có COGS Main (A). (100.000−40.000−10.000)×10 + (90.000−40.000)×20 = 500.000 + 1.000.000
+  assert.equal(m.totals.gross, 1_500_000);
+  assert.equal(m.totals.gmvCogs, 2_800_000);
+  assert.equal(m.totals.linesCogs, 2);
+  // không có dữ liệu -> không NaN
+  const e = L.overallModel([], get);
+  assert.equal(e.totals.gmv, 0); assert.deepEqual(e.bySku, []);
+});
+
+test('combo: qty + SKU gộp thêm được lưu; line cũ vẫn đọc được; nhu cầu kho nhân theo số lượng từng SKU', async () => {
+  const base = { month: '2026-12', campaign: 'bau', price: 100000, units: 10, main: { sku: 'A' }, gifts: [{ sku: 'G', qty: 2, cost: 1000 }] };
+  // line cũ: không qty, không combo
+  const old = sanitizeLine(base);
+  assert.equal(old.main.qty, 1); assert.deepEqual(old.combo, []);
+  // cùng 1 SKU nhiều cái (mua 3) + combo 2 SKU khác nhau
+  const triple = sanitizeLine({ ...base, main: { sku: 'A', qty: 3 } });
+  assert.equal(triple.main.qty, 3);
+  const combo = sanitizeLine({ ...base, main: { sku: 'A', qty: 2 }, combo: [{ sku: 'B', qty: 1 }, { sku: 'A', qty: 1 }] });
+  assert.deepEqual(combo.combo.map((c) => [c.sku, c.qty]), [['B', 1], ['A', 1]]);
+  assert.throws(() => sanitizeLine({ ...base, main: { sku: 'A', qty: 0 } }), ForecastError);
+  assert.throws(() => sanitizeLine({ ...base, main: { sku: 'A', qty: 1.5 } }), ForecastError);
+  assert.throws(() => sanitizeLine({ ...base, combo: [{ sku: '', qty: 1 }] }), ForecastError);
+  assert.throws(() => sanitizeLine({ ...base, combo: Array.from({ length: 11 }, () => ({ sku: 'B', qty: 1 })) }), ForecastError);
+  assert.throws(() => sanitizeLine({ ...base, combo: 'x' }), ForecastError);
+  // nhu cầu: 10 deal × (A×2 + B×1 + A×1) = A 30, B 10; quà G 10×2 = 20
+  const d = demandByMonth([{ ...combo, id: 'x' }, { ...old, id: 'y', units: null }])['2026-12'];
+  assert.deepEqual(d, { A: { main: 30, gift: 0 }, B: { main: 10, gift: 0 }, G: { main: 0, gift: 20 } });
+  // line cũ lưu trong Blobs (không qty/combo) vẫn tính nhu cầu như cũ
+  const legacy = { month: '2026-12', units: 5, main: { sku: 'A' }, gifts: [] };
+  assert.deepEqual(demandByMonth([legacy])['2026-12'], { A: { main: 5, gift: 0 } });
+  // lưu qua API rồi đọc lại
+  const { created } = await applyOp({ op: 'add', lines: [{ ...base, main: { sku: 'A', qty: 2 }, combo: [{ sku: 'B', qty: 3 }] }] }, 'a@example.com');
+  const saved = (await getForecast()).lines.find((l) => l.id === created[0]);
+  assert.equal(saved.main.qty, 2); assert.deepEqual(saved.combo.map((c) => [c.sku, c.qty]), [['B', 3]]);
+});
+
+test('logic: calcLine tính COGS cả deal combo; thiếu COGS một SKU thì không tính %GM; isCombo/dealLabel', () => {
+  const items = { A: { cogs: 100000 }, B: { cogs: 50000 }, C: {} };
+  const get = (s) => items[s];
+  const line = (o) => ({ campaign: 'BAU', price: 400000, main: { sku: 'A', qty: 2 }, combo: [{ sku: 'B', qty: 1 }], gifts: [], ...o });
+  const c = L.calcLine(line(), get);
+  assert.equal(c.mainCogs, 250000);                 // 2×100.000 + 1×50.000
+  assert.equal(c.afterGifts, 150000);
+  assert.ok(Math.abs(c.gmPct - 0.375) < 1e-9);
+  assert.equal(L.calcLine(line({ combo: [{ sku: 'C', qty: 1 }] }), get).mainCogs, null);
+  assert.equal(L.calcLine({ campaign: 'BAU', price: 1000, main: { sku: 'A' }, gifts: [] }, get).mainCogs, 100000, 'line cũ: 1 SKU × 1');
+  assert.equal(L.isCombo(line()), true);
+  assert.equal(L.isCombo({ main: { sku: 'A', qty: 1 }, combo: [] }), false);
+  assert.equal(L.isCombo({ main: { sku: 'A', qty: 3 } }), true);
+  assert.equal(L.dealLabel(line()), 'A×2 + B');
+  assert.equal(L.dealLabel({ main: { sku: 'A' } }), 'A');
+});
+
+test('logic.overallModel: GMV deal combo chia cho từng SKU theo (SL × COGS); tổng/channel không đổi', () => {
+  const items = { A: { sku: 'A', cogs: 100000, category: 'Nồi' }, B: { sku: 'B', cogs: 50000, category: 'Chảo' }, C: { sku: 'C', cogs: null, category: 'Cốc' } };
+  const get = (s) => items[s];
+  const l = (o) => ({ campaign: 'BAU', channel: 'shopee', price: 400000, units: 10, main: { sku: 'A', qty: 2 }, combo: [{ sku: 'B', qty: 1 }], gifts: [], ...o });
+  const m = L.overallModel([l()], get);
+  assert.equal(m.totals.gmv, 4_000_000);
+  assert.equal(m.totals.combos, 1);
+  // trọng số A = 2×100.000 = 200.000, B = 50.000 → A 80% = 3.200.000, B 20% = 800.000
+  assert.deepEqual(m.bySku.map((s) => [s.sku, Math.round(s.gmv), s.units]), [['A', 3_200_000, 20], ['B', 800_000, 10]]);
+  assert.deepEqual(m.byCategory.map((c) => [c.key, Math.round(c.gmv)]), [['Nồi', 3_200_000], ['Chảo', 800_000]]);
+  assert.equal(m.byChannel[0].gmv, 4_000_000);
+  assert.equal(m.totals.gross, (400000 - 250000) * 10);
+  // thiếu COGS ở một SKU -> chia theo số lượng (A×2 : C×1 = 2/3 : 1/3), không tính lãi gộp
+  const m2 = L.overallModel([l({ combo: [{ sku: 'C', qty: 1 }] })], get);
+  assert.deepEqual(m2.bySku.map((s) => [s.sku, Math.round(s.gmv)]), [['A', 2_666_667], ['C', 1_333_333]]);
+  assert.equal(m2.totals.linesCogs, 0);
+  // tổng phân bổ theo SKU luôn bằng GMV
+  assert.equal(Math.round(m2.bySku.reduce((s, x) => s + x.gmv, 0)), 4_000_000);
+});
+
+const PUBLIC_JS = ['api', 'app', 'filters', 'forecast', 'linecard', 'logic', 'overall', 'plan', 'state', 'ui', 'login'].map((n) => `public/${n}.js`);
 test('frontend: mọi file JS đúng cú pháp module', async () => {
   for (const f of PUBLIC_JS) {
     const src = await readFile(new URL('../' + f, import.meta.url), 'utf8');
@@ -625,8 +732,8 @@ test('frontend: tuân thủ CSP — không innerHTML/eval/inline script/style, k
   assert.equal(/@import|url\(\s*["']?https?:/i.test(css), false);
 });
 
-test('frontend: TYPE "Other" ẩn mặc định; HTML có đủ phần tử mà JS cần', async () => {
-  assert.match(await readFile(new URL('../public/state.js', import.meta.url), 'utf8'), /hiddenTypes:\s*new Set\(\['other'\]\)/);
+test('frontend: TYPE Other hiện mặc định (không ẩn); HTML có đủ phần tử mà JS cần', async () => {
+  assert.match(await readFile(new URL('../public/state.js', import.meta.url), 'utf8'), /hiddenTypes:\s*new Set\(\)/);
   const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   for (const f of PUBLIC_JS) {

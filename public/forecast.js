@@ -1,7 +1,7 @@
 // Tab Forecast: các line đã lưu. Sửa trực tiếp (đổi quà, giá, SL, campaign…), tự lưu sau khi ngừng gõ ~0,7 giây.
 import { state, items, itemBySku, alertMonth, forecastLines, evalFor, hooks } from './state.js';
-import { $, el, thumb, toast, fmtNum, fmtMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips, skuButton } from './ui.js';
-import { calcLine, DEFAULT_MAX_CIR } from './logic.js';
+import { $, el, thumb, toast, fmtNum, fmtMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips, skuButton, channelSegButtons, channelPill } from './ui.js';
+import { calcLine, DEFAULT_MAX_CIR, CHANNELS, channelOf, channelLabel, componentsOf, dealLabel } from './logic.js';
 import { lineCard, lineIssues, clean, setLineStatus } from './linecard.js';
 import { postForecast } from './api.js';
 
@@ -69,7 +69,7 @@ function ensureMonth() {
   state.fcMonth = ms.includes(alertMonth()) ? alertMonth() : (ms.find((m) => m > alertMonth()) ?? ms[ms.length - 1]);
 }
 
-const lineSkus = (l) => [l.main.sku, ...l.gifts.map((g) => g.sku)];
+const lineSkus = (l) => [...componentsOf(l).map((c) => c.sku), ...l.gifts.map((g) => g.sku)];
 const lineLevels = (l) => lineSkus(l).map((s) => evalFor(s, l.month)?.level).filter(Boolean);
 const lineHasAlert = (l) => lineLevels(l).some((lv) => ALERT_LEVELS.has(lv)) || calcLine(l, itemBySku).status === 'over';
 
@@ -82,9 +82,11 @@ function matchesQuery(l) {
   });
 }
 
+const chRank = (l) => CHANNELS.findIndex((c) => c.key === channelOf(l));
+
 function visibleLines() {
-  return forecastLines().filter((l) => l.month === state.fcMonth && (!state.fcCampaign || l.campaign === state.fcCampaign) && matchesQuery(l) && (!state.fcOnlyAlert || lineHasAlert(l)))
-    .sort((a, b) => a.campaign.localeCompare(b.campaign) || (itemBySku(a.main.sku)?.name ?? a.main.sku).localeCompare(itemBySku(b.main.sku)?.name ?? b.main.sku, 'vi'));
+  return forecastLines().filter((l) => l.month === state.fcMonth && (!state.fcChannel || channelOf(l) === state.fcChannel) && (!state.fcCampaign || l.campaign === state.fcCampaign) && matchesQuery(l) && (!state.fcOnlyAlert || lineHasAlert(l)))
+    .sort((a, b) => chRank(a) - chRank(b) || a.campaign.localeCompare(b.campaign) || (itemBySku(a.main.sku)?.name ?? a.main.sku).localeCompare(itemBySku(b.main.sku)?.name ?? b.main.sku, 'vi'));
 }
 
 const kpi = (cls, k, v, title) => el('div', { class: 'kpi ' + cls, title: title || '' }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }));
@@ -94,9 +96,11 @@ function renderKpis(lines) {
   const units = lines.reduce((s, l) => s + (l.units ?? 0), 0);
   const giftTotal = lines.reduce((s, l) => s + (l.units ?? 0) * calcLine(l, itemBySku).giftCost, 0);
   const over = lines.filter((l) => calcLine(l, itemBySku).status === 'over').length;
+  const gmv = lines.reduce((s, l) => s + (l.units ?? 0) * (Number(l.price) || 0), 0);
   $('fcKpis').replaceChildren(
     kpi('', 'Line', fmtNum(lines.length)),
     kpi('', 'SL Main dự kiến', fmtNum(units)),
+    kpi('', 'GMV dự kiến', fmtMoney(gmv), 'Σ Giá bán × SL dự kiến (chỉ line đã nhập SL)'),
     kpi('', 'Tổng vốn quà dự kiến', fmtMoney(giftTotal), 'Σ SL dự kiến × vốn quà của từng line'),
     kpi(over ? 'bad' : '', 'Line CIR Over', fmtNum(over)),
     kpi('bad', 'SKU thiếu / hết', fmtNum(evs.filter((e) => e.level === 'short' || e.level === 'out').length), 'SKU (Main + quà) có tồn thấp hơn nhu cầu tổng hợp của tháng'),
@@ -106,15 +110,25 @@ function renderKpis(lines) {
 function renderLines(lines) {
   const body = $('fcBody');
   const groups = new Map();
-  for (const l of lines) (groups.get(l.campaign) ?? groups.set(l.campaign, []).get(l.campaign)).push(l);
+  for (const l of lines) {
+    const k = channelOf(l) + '|' + l.campaign;
+    (groups.get(k) ?? groups.set(k, []).get(k)).push(l);
+  }
   const nodes = [];
-  for (const [campaign, ls] of groups) {
-    const allCollapsed = ls.every((l) => state.fcCollapsed.has(l.id));
-    nodes.push(el('h3', { class: 'group' }, el('span', { text: campaign }), el('span', { class: 'count', text: `${ls.length} line` }),
-      campaign in DEFAULT_MAX_CIR ? el('span', { class: 'muted', text: ` · Max CIR ${fmtPct(DEFAULT_MAX_CIR[campaign])}` }) : null));
+  for (const [k, ls] of groups) {
+    const ch = channelOf(ls[0]);
+    const campaign = ls[0].campaign;
+    const units = ls.reduce((s, l) => s + (l.units ?? 0), 0);
+    const gmv = ls.reduce((s, l) => s + (l.units ?? 0) * (Number(l.price) || 0), 0);
+    nodes.push(el('h3', { class: 'group ch-' + ch },
+      channelPill(ch, channelLabel(ch)),
+      el('span', { class: 'gname', text: campaign }),
+      el('span', { class: 'count', text: `${ls.length} line` }),
+      campaign in DEFAULT_MAX_CIR ? el('span', { class: 'muted', text: `Max CIR ${fmtPct(DEFAULT_MAX_CIR[campaign])}` }) : null,
+      units > 0 ? el('span', { class: 'muted', text: `· SL ${fmtNum(units)} · GMV ${fmtMoney(gmv)}` }) : null));
     for (const l of ls) {
       nodes.push(lineCard(l, {
-        collapsed: state.fcCollapsed.has(l.id) || (allCollapsed && false),
+        collapsed: state.fcCollapsed.has(l.id),
         onChange: queueSave, onRemove: removeLine,
         onToggle: (line, c) => { if (c) state.fcCollapsed.add(line.id); else state.fcCollapsed.delete(line.id); },
       }));
@@ -163,6 +177,14 @@ export function renderForecast() {
   $('fcCampaign').replaceChildren(el('option', { value: '', text: 'Mọi campaign' }), ...campaigns.map((c) => el('option', { value: c, text: c })));
   $('fcCampaign').value = state.fcCampaign;
   $('fcOnlyAlert').checked = state.fcOnlyAlert;
+  const inMonth = all.filter((l) => l.month === state.fcMonth);
+  const chCounts = {};
+  for (const l of inMonth) chCounts[channelOf(l)] = (chCounts[channelOf(l)] ?? 0) + 1;
+  $('fcChannel').replaceChildren(...channelSegButtons({
+    value: state.fcChannel, counts: chCounts, total: inMonth.length,
+    onPick: (k) => { state.fcChannel = k; hooks.render({ body: true, force: true }); },
+  }));
+  $('fcChannel').hidden = state.fcView === 'sku';
   document.querySelectorAll('[data-fcview]').forEach((b) => b.classList.toggle('on', b.dataset.fcview === state.fcView));
   $('fcLineTools').hidden = state.fcView !== 'lines';
 
@@ -192,10 +214,10 @@ export function forecastCsv() {
     return [['Tháng', 'SKU', 'Tên', 'Vai trò', 'Nhu cầu', 'Main', 'Quà', 'Tồn tổng', 'MB', 'MN', 'MN cần', 'Cảnh báo'],
       ...skuRows().map(({ it, ev }) => [state.fcMonth, it.sku, it.name, ev.gift > 0 ? (ev.main > 0 ? 'Main + Quà' : 'Quà') : 'Main', ev.qty, ev.main, ev.gift, it.total, it.north, it.south, ev.needSouth, LEVEL[ev.level].label + ': ' + alertText(it, ev)])];
   }
-  return [['Tháng', 'Campaign', 'SKU Main', 'Sản phẩm Main', 'Giá bán', 'SL dự kiến', 'Số quà', 'Vốn quà', 'CIR', 'Max CIR', 'Trạng thái CIR', 'Chi tiết quà (SKU×SL@vốn)'],
+  return [['Tháng', 'Channel', 'Campaign', 'SKU Main (deal)', 'Sản phẩm trong deal', 'Giá bán', 'SL dự kiến', 'Số quà', 'Vốn quà', 'CIR', 'Max CIR', 'Trạng thái CIR', 'Chi tiết quà (SKU×SL@vốn)'],
     ...visibleLines().map((l) => {
       const c = calcLine(l, itemBySku);
-      return [l.month, l.campaign, l.main.sku, itemBySku(l.main.sku)?.name ?? l.main.srcName, l.price, l.units ?? '', l.gifts.length, c.giftCost,
+      return [l.month, channelLabel(channelOf(l)), l.campaign, dealLabel(l), componentsOf(l).map((c) => itemBySku(c.sku)?.name ?? c.sku).join(' + ') || l.main.srcName, l.price, l.units ?? '', l.gifts.length, c.giftCost,
         c.cir === null ? '' : (c.cir * 100).toFixed(2) + '%', c.maxCir === null ? '' : (c.maxCir * 100).toFixed(2) + '%', c.status,
         l.gifts.map((g) => `${g.sku}×${g.qty}@${g.cost}`).join('; ')];
     })];

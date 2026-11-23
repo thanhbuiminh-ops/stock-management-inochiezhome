@@ -1,9 +1,9 @@
 # Inochi · Visual Stock
 
 Website xem tồn kho dạng trực quan, đọc dữ liệu từ Google Sheet **"Inochi BMT - Pricing Frame"** (tab `COGS`), host trên Netlify, chỉ tài khoản được cấp mới vào được.
-Mặc định ẩn các sản phẩm có TYPE = `Other`; mọi TYPE khác (kể cả TYPE mới bạn thêm sau này) tự hiện thành nút lọc, bấm để bật/tắt.
+Tab Tồn kho hiện **cả Main lẫn Other** mặc định; mọi TYPE (kể cả TYPE mới bạn thêm sau này) tự hiện thành nút lọc, bấm để ẩn/hiện.
 **Giao diện:** theme sáng theo inochi.vn (thanh xanh ngọc, navy, thẻ trắng), font Quicksand tự host trong `public/fonts` (giấy phép OFL kèm theo). Thẻ sản phẩm cùng một kích thước; Bắc / Nam / Tổng hiển thị dạng số; bấm **mã SKU** để copy; bấm **ảnh** để xem lớn (← → chuyển ảnh, Esc đóng); rê chuột vào thẻ để làm nổi bật.
-Có 3 tab: **Tồn kho** (thẻ sản phẩm có ảnh, Bắc/Nam, COGS, giá trị tồn, cảnh báo theo Forecast), **Plan** (dán dữ liệu từ Google Sheet → ghép tên sản phẩm → Confirm) và **Forecast** (các line đã lưu, sửa trực tiếp).
+Có 4 tab: **Tồn kho** (thẻ sản phẩm có ảnh, Bắc/Nam, COGS, giá trị tồn, cảnh báo theo Forecast), **Plan** (dán dữ liệu từ Google Sheet → ghép tên sản phẩm → Confirm) **Forecast** (các line đã lưu, sửa trực tiếp) và **Overall** (tổng hợp GMV theo channel / SKU, đặt cạnh tồn kho).
 
 ## Kiến trúc
 
@@ -55,6 +55,35 @@ Thanh kết quả (tìm kiếm, sắp xếp, Thẻ/Bảng) và bảng bộ lọc
 - **Dữ liệu**: lọc SKU thiếu ảnh / có ảnh / thiếu COGS.
 - Quy tắc: khi một khoảng giá đang bật, SKU **không có giá trị đó** (vd thiếu COGS) bị loại khỏi kết quả.
 - Các bộ lọc đang bật hiện thành chip phía trên danh sách (✕ để bỏ từng cái, "Xoá tất cả bộ lọc").
+
+## Channel (Shopee / TikTok / Website)
+
+- Mỗi line Forecast có **Channel**. Ở tab **Plan** chọn channel cho cả lô dán (đổi riêng từng line ở thẻ nếu cần) và lọc các line chờ theo channel; ở tab **Forecast** có nút lọc channel kèm số line, các line được nhóm theo *Channel · Campaign*.
+- Line đã lưu **trước khi có trường này** không có channel và được hiểu là **Shopee**. Nếu không đúng, đổi channel ở thẻ line (tự lưu).
+- Cảnh báo tồn vẫn tính trên **tổng nhu cầu mọi channel** (giả định các channel dùng chung kho Boxme — cần bạn xác nhận).
+
+## Tab Overall
+
+Chọn tháng (mặc định tháng tới nếu đã có Forecast) rồi lọc theo channel (chọn nhiều), campaign, category, tìm SKU, "chỉ SKU cần chú ý", sắp xếp (GMV / số lượng / thiếu hụt tồn / độ phủ thấp) và Top N.
+- **GMV dự kiến = Giá bán × SL dự kiến**, chỉ tính line đã nhập SL (số line chưa nhập SL được báo ở đầu trang). Quà tặng không có doanh thu, chỉ có vốn.
+- **CIR bình quân** = Σ vốn quà ÷ GMV. **%GM sau quà** = Σ (Giá bán − COGS Main − vốn quà) × SL ÷ GMV, chỉ line có COGS Main; **chưa trừ phí sàn, ads, voucher** (không phải "Biên ròng").
+- Bảng SKU: GMV tách theo channel, SL bán, **nhu cầu kho** (Main + quà của mọi channel — không đổi khi lọc channel), tồn Bắc/Nam/Tổng và độ phủ. Tồn lấy từ Sheet, chưa tính hàng đang về.
+
+## Nhập thủ công (tab Plan)
+
+Bấm **Nhập thủ công** → xổ ra toàn bộ mã **Main** (nhóm theo category, có ảnh và tồn). Lọc/tìm theo SKU hoặc tên, tick một hay nhiều SKU, chỉnh **SL/deal** của từng SKU rồi chọn:
+- **Thêm mỗi SKU 1 line** (SL/deal > 1 = cùng 1 SKU nhiều cái trong một deal), hoặc
+- **Gộp thành 1 combo** (từ 2 SKU trở lên: SKU đầu là Main, các SKU còn lại gộp thêm), hoặc **+ Line trống**.
+Channel, tháng lấy theo ô phía trên; campaign nhập ngay trong panel (hoặc điền ở thẻ). Các line mới vào danh sách chờ để kiểm tra rồi **Confirm**. Mặc định chỉ hiện TYPE Main; tick "Hiện cả TYPE khác" để chọn cả Other.
+
+## Deal Combo
+
+Một line = một **deal**: SKU Main × `SL/deal` + (tuỳ chọn) các SKU khác gộp thêm bằng **+ Gộp thêm SKU (combo)**; thẻ hiện nhãn `COMBO`. Giá bán là **giá của cả deal**; SL dự kiến là **số deal** bán ra.
+- **Nhu cầu kho** của từng SKU = SL deal × SL/deal của SKU đó (+ quà tặng như cũ). Một SKU xuất hiện ở nhiều deal thì cộng dồn.
+- **%GM / Sau quà** dùng COGS cả deal = Σ SL/deal × COGS từng SKU. Thiếu COGS ở bất kỳ SKU nào thì không tính (để trống, không đoán).
+- **Overall:** GMV deal có nhiều SKU được chia cho từng SKU theo tỉ lệ (SL × COGS), thiếu COGS thì theo số lượng. Đây là cách phân bổ để xem theo SKU/category; tổng GMV, channel, campaign không đổi.
+- Dán từ Sheet **chưa nhận diện combo** (mỗi dòng Main vẫn là một line riêng); sau khi dán, gộp thêm SKU ngay trên thẻ line.
+- Line cũ không có SL/deal hay combo được hiểu là 1 SKU × 1.
 
 ## Cài đặt (làm 1 lần)
 

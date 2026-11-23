@@ -1,7 +1,7 @@
 // Thành phần giao diện dùng chung: tạo phần tử DOM, định dạng số, toast, bộ chọn sản phẩm.
 // Không dùng innerHTML (CSP + chống XSS): luôn dựng bằng createElement/textContent.
 import { state, items, itemBySku, rules } from './state.js';
-import { rank, search, confidence } from './logic.js';
+import { rank, search, confidence, CHANNELS } from './logic.js';
 
 export const $ = (id) => document.getElementById(id);
 
@@ -235,3 +235,18 @@ export function openLightbox(entries, index = 0) {
   show(); x.focus();
   lightbox = { close };
 }
+
+
+// Bộ lọc channel dạng nút: "Tất cả" + từng channel (kèm số lượng). value = '' (tất cả) hoặc key channel.
+// Dùng ở Plan và Forecast. Trả về mảng nút để gắn vào container bằng replaceChildren.
+export function channelSegButtons({ value, counts = {}, total = null, onPick }) {
+  const mk = (key, label, n) => {
+    const b = el('button', { type: 'button', class: (value === key ? 'on ' : '') + (key ? 'ch-' + key : ''), 'data-ch': key, 'aria-pressed': String(value === key) },
+      label, n === null || n === undefined ? null : el('span', { class: 'n', text: String(n) }));
+    b.addEventListener('click', () => onPick(key));
+    return b;
+  };
+  return [mk('', 'Tất cả', total), ...CHANNELS.map((c) => mk(c.key, c.label, counts[c.key] ?? 0))];
+}
+
+export const channelPill = (key, label) => el('span', { class: 'chpill ch-' + key, text: label });

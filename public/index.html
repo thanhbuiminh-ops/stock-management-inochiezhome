@@ -15,6 +15,7 @@
       <button type="button" role="tab" data-tab="stock">Tồn kho</button>
       <button type="button" role="tab" data-tab="plan">Plan</button>
       <button type="button" role="tab" data-tab="forecast">Forecast <span id="fcCount" class="count" hidden></span></button>
+      <button type="button" role="tab" data-tab="overall">Overall</button>
     </nav>
     <div class="actions">
       <span id="freshness" class="fresh">Đang tải…</span>
@@ -114,24 +115,48 @@
   <section id="tab-plan" class="view" hidden>
     <div class="panel paste">
       <h2>1 · Dán dữ liệu từ Google Sheet</h2>
-      <p class="hint">Copy vùng bảng trong Sheet (các cột <b>Campaign Type · Loại (Main/Gift) · Tên sản phẩm · Số lượng · RSP (Main)/COGS (Gift)</b>, có thêm <b>Max CIR</b> càng tốt) rồi dán vào ô dưới. Không cần mã SKU — web tự ghép theo tên, bạn chỉ cần xem lại những dòng "Gần giống" hoặc "Chưa khớp".</p>
+      <p class="hint">Chọn <b>Channel</b> (áp dụng cho cả lô dán; đổi riêng từng line ở thẻ bên dưới nếu cần). Copy vùng bảng trong Sheet (các cột <b>Campaign Type · Loại (Main/Gift) · Tên sản phẩm · Số lượng · RSP (Main)/COGS (Gift)</b>, có thêm <b>Max CIR</b> càng tốt) rồi dán vào ô dưới. Không cần mã SKU — web tự ghép theo tên, bạn chỉ cần xem lại những dòng "Gần giống" hoặc "Chưa khớp".</p>
       <textarea id="paste" rows="6" spellcheck="false" placeholder="Dán ở đây (Ctrl/Cmd + V)…"></textarea>
       <div class="paste-row">
+        <label class="lc-field inline"><span class="lc-lbl">Channel</span>
+          <select id="pasteChannel" class="txt-in"><option value="shopee">Shopee</option><option value="tiktok">TikTok</option><option value="website">Website</option></select></label>
         <label class="lc-field inline"><span class="lc-lbl">Tháng áp dụng</span><input id="pasteMonth" type="month" class="txt-in"></label>
         <button id="analyze" type="button" class="btn primary">Phân tích &amp; ghép sản phẩm</button>
-        <button id="manualAdd" type="button" class="btn">+ Thêm line thủ công</button>
+        <button id="manualAdd" type="button" class="btn" aria-expanded="false" aria-controls="manualPanel">Nhập thủ công ▾</button>
+      </div>
+      <div id="manualPanel" class="manual" hidden>
+        <div class="mp-head">
+          <b>Nhập thủ công — chọn các mã Main</b>
+          <span class="muted">Tick một hoặc nhiều SKU, chỉnh SL/deal rồi thêm. Channel và tháng lấy theo ô phía trên.</span>
+        </div>
+        <div class="mp-tools">
+          <input id="mpQ" type="search" placeholder="Lọc theo SKU / tên…" autocomplete="off" aria-label="Lọc mã Main">
+          <label class="check"><input id="mpOther" type="checkbox"> Hiện cả TYPE khác (Other)</label>
+          <input id="mpCampaign" class="txt-in mp-camp" list="campaignList" placeholder="Campaign (BAU…)" autocomplete="off" aria-label="Campaign cho các line mới">
+          <button id="mpSelectAll" type="button" class="link">Chọn tất cả đang hiện</button>
+          <button id="mpClear" type="button" class="link">Bỏ chọn</button>
+        </div>
+        <div id="mpList" class="mp-list" role="list"></div>
+        <div class="mp-foot">
+          <span id="mpCount" class="mp-count"></span>
+          <button id="mpAddBlank" type="button" class="btn ghost">+ Line trống</button>
+          <button id="mpAddEach" type="button" class="btn">Thêm mỗi SKU 1 line</button>
+          <button id="mpAddCombo" type="button" class="btn primary">Gộp thành 1 combo</button>
+        </div>
       </div>
       <div id="pasteWarn" class="note-warn" hidden></div>
     </div>
     <h2 class="step">2 · Kiểm tra &amp; Confirm</h2>
+    <div id="planFilter" class="plan-filter" hidden><span class="lbl">Lọc channel</span><span id="planChannel" class="seg chseg" role="group" aria-label="Lọc line chờ theo channel"></span></div>
     <div id="reviewBar"></div>
     <div id="review"></div>
   </section>
 
   <!-- ===== Forecast: line đã lưu, sửa trực tiếp ===== -->
-  <section id="tab-forecast" class="view" hidden>
+  <section id="tab-forecast" class="view view-wide" hidden>
     <div class="toolbar sticky">
       <input id="fcQ" type="search" placeholder="Tìm sản phẩm / SKU (Main hoặc quà)" autocomplete="off">
+      <span id="fcChannel" class="seg chseg" role="group" aria-label="Lọc theo channel"></span>
       <select id="fcMonth" aria-label="Tháng"></select>
       <select id="fcCampaign" aria-label="Campaign"></select>
       <label class="check"><input id="fcOnlyAlert" type="checkbox"> Chỉ line cần chú ý</label>
@@ -146,6 +171,32 @@
     </div>
     <div id="fcKpis" class="kpis"></div>
     <div id="fcBody"></div>
+  </section>
+
+  <!-- ===== Overall: tổng hợp Forecast theo channel / SKU, đặt cạnh tồn kho ===== -->
+  <section id="tab-overall" class="view view-wide" hidden>
+    <div id="ovFilters" class="toolbar sticky ov-toolbar">
+      <input id="ovQ" type="search" placeholder="Tìm SKU / sản phẩm Main" autocomplete="off">
+      <select id="ovMonth" aria-label="Tháng"></select>
+      <span id="ovChannelFilter" class="seg chseg" role="group" aria-label="Lọc theo channel (chọn nhiều)"></span>
+      <select id="ovCampaign" aria-label="Campaign"></select>
+      <select id="ovCategory" aria-label="Category"></select>
+      <label class="check"><input id="ovOnlyAlert" type="checkbox"> Chỉ SKU cần chú ý</label>
+      <select id="ovSort" aria-label="Sắp xếp bảng SKU">
+        <option value="gmv">Xếp theo GMV</option>
+        <option value="units">Xếp theo số lượng bán</option>
+        <option value="gap">Thiếu hụt tồn nhiều nhất</option>
+        <option value="cover">Độ phủ tồn thấp nhất</option>
+      </select>
+      <select id="ovTop" aria-label="Số SKU hiển thị">
+        <option value="10">Top 10</option><option value="20">Top 20</option><option value="50">Top 50</option><option value="0">Tất cả</option>
+      </select>
+      <button id="ovReset" type="button" class="link" hidden>Xoá lọc</button>
+    </div>
+    <div id="ovNotice"></div>
+    <div id="ovKpis" class="kpis"></div>
+    <div id="ovCharts" class="ov-grid"></div>
+    <div id="ovSku"></div>
   </section>
 
   <script type="module" src="/app.js"></script>

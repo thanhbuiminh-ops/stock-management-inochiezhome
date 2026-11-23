@@ -1,10 +1,11 @@
 // Điều phối chung: tải dữ liệu, tab, banner, và tab "Tồn kho". Plan / Forecast nằm ở plan.js / forecast.js.
 import { state, hooks, items, itemBySku, alertMonth, forecastLines, evalFor } from './state.js';
 import { $, el, thumb, fmtTime, fmtNum, fmtMoney, fmtCompactMoney, monthLabel, LEVEL, ALERT_LEVELS, alertText, toast, skuButton, openLightbox } from './ui.js';
-import { DEFAULT_MAX_CIR } from './logic.js';
+import { DEFAULT_MAX_CIR, componentsOf } from './logic.js';
 import { initPlan, renderPlan } from './plan.js';
 import { initFilters, renderFilters, matchItem, typeKey, categoryOf, levelOf, stockValue } from './filters.js';
 import { initForecast, renderForecast, forecastBusy, forecastCsv } from './forecast.js';
+import { initOverall, renderOverall, overallCsv } from './overall.js';
 
 const STALE_SEC = 15 * 60;   // website không đọc lại được Sheet quá ngưỡng này -> cảnh báo
 const POLL_MS = 30 * 1000;   // hỏi server mỗi 30s khi tab đang mở (server tự đọc lại Sheet khi đến hạn)
@@ -13,7 +14,7 @@ try {
   const v = localStorage.getItem('sb_view'); if (v === 'cards' || v === 'table') state.view = v;
   const s = localStorage.getItem('sb_sort'); if (['attention', 'total-asc', 'total-desc', 'name'].includes(s)) state.sort = s;
   const c = localStorage.getItem('sb_charts'); state.showCharts = c === null ? window.innerWidth >= 900 : c === '1';
-  const t = localStorage.getItem('sb_tab'); if (['stock', 'plan', 'forecast'].includes(t)) state.tab = t;
+  const t = localStorage.getItem('sb_tab'); if (['stock', 'plan', 'forecast', 'overall'].includes(t)) state.tab = t;
 } catch { state.showCharts = window.innerWidth >= 900; }
 $('sort').value = state.sort;
 
@@ -48,7 +49,7 @@ function renderBanner() {
     msgs.push('Website chưa đọc lại được Sheet từ ' + fmtTime(snapshot.generatedAt) + '.');
   }
   if (snapshot) {
-    const missing = forecastLines().filter((l) => [l.main.sku, ...l.gifts.map((g) => g.sku)].some((s) => !itemBySku(s))).length;
+    const missing = forecastLines().filter((l) => [...componentsOf(l).map((c) => c.sku), ...l.gifts.map((g) => g.sku)].some((s) => !itemBySku(s))).length;
     if (missing) msgs.push(`${missing} line Forecast có SKU không còn trong tab ${snapshot.tab} của Sheet — hãy vào tab Forecast chọn lại sản phẩm.`);
   }
   for (const w of snapshot?.warnings ?? []) msgs.push(w);
@@ -75,7 +76,7 @@ function renderChrome() {
   $('fcCount').hidden = !n;
   renderBanner(); renderFreshness();
   document.querySelectorAll('.tabs button').forEach((b) => { const on = b.dataset.tab === state.tab; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
-  for (const t of ['stock', 'plan', 'forecast']) $('tab-' + t).hidden = state.tab !== t;
+  for (const t of ['stock', 'plan', 'forecast', 'overall']) $('tab-' + t).hidden = state.tab !== t;
   $('csv').hidden = state.tab === 'plan';
   const camps = new Set([...Object.keys(DEFAULT_MAX_CIR), 'MINPRICE', ...forecastLines().map((l) => l.campaign)]);
   $('campaignList').replaceChildren(...[...camps].sort().map((c) => el('option', { value: c })));
@@ -250,7 +251,8 @@ function render(opts = {}) {
   else if (state.tab === 'plan') {
     // Plan có ô nhập liệu: chỉ vẽ lại khi người dùng thao tác, không vẽ lại mỗi lần thăm dò dữ liệu
     if (opts.body || !planShown) { renderPlan(); planShown = true; }
-  } else if (opts.force || !forecastBusy()) { renderForecast(); pendingRender = false; }
+  } else if (state.tab === 'overall') renderOverall();
+  else if (opts.force || !forecastBusy()) { renderForecast(); pendingRender = false; }
   else pendingRender = true;
 }
 hooks.render = render;
@@ -293,6 +295,7 @@ function download(name, rows) {
 function exportCsv() {
   const day = new Date().toISOString().slice(0, 10);
   if (state.tab === 'forecast') return download('forecast-' + state.fcMonth + '-' + day + '.csv', forecastCsv());
+  if (state.tab === 'overall') return download('overall-' + state.ov.month + '-' + day + '.csv', overallCsv());
   const hasCost = !!state.data?.snapshot?.hasCost;
   const head = ['SKU', 'Tên', 'Short Name', 'TYPE', 'Category', 'Kho Bắc', 'Kho Nam', 'Tổng', 'Nhu cầu ' + alertMonth(), 'Cảnh báo'];
   if (hasCost) head.push('COGS', 'Giá trị tồn');
@@ -352,6 +355,7 @@ on('logout', 'click', async () => {
 initFilters(() => render());
 initPlan();
 initForecast();
+initOverall();
 await load();
 setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
 setInterval(renderFreshness, 15000);
