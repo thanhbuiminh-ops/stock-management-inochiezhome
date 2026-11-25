@@ -1,6 +1,6 @@
 // Tab Forecast: các line đã lưu. Sửa trực tiếp (đổi quà, giá, SL, campaign…), tự lưu sau khi ngừng gõ ~0,7 giây.
 import { state, items, itemBySku, alertMonth, currentMonth, forecastLines, evalFor, hooks } from './state.js';
-import { $, el, thumb, toast, fmtNum, fmtMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips, skuButton, channelSegButtons, channelPill } from './ui.js';
+import { $, el, thumb, toast, fmtNum, fmtMoney, fmtCompactMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips, skuButton, channelSegButtons, channelPill } from './ui.js';
 import { buildXlsx } from './xlsx.js';
 import { tableSheet, forecastWorkbook } from './export.js';
 import { calcLine, DEFAULT_MAX_CIR, CHANNELS, channelOf, channelLabel, componentsOf, dealLabel, prevMonth, overallModel } from './logic.js';
@@ -94,7 +94,8 @@ function visibleLines() {
     .sort((a, b) => chRank(a) - chRank(b) || a.campaign.localeCompare(b.campaign) || (itemBySku(a.main.sku)?.name ?? a.main.sku).localeCompare(itemBySku(b.main.sku)?.name ?? b.main.sku, 'vi'));
 }
 
-const kpi = (cls, k, v, title) => el('div', { class: 'kpi ' + cls, title: title || '' }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }));
+// title luôn có giá trị đầy đủ: ô KPI hiển thị rút gọn (tỷ/triệu) để không bị tràn, rê chuột để xem số chính xác
+const kpi = (cls, k, v, title) => el('div', { class: 'kpi ' + cls, title: title ? `${k}: ${v}\n${title}` : `${k}: ${v}` }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v }));
 
 function renderKpis(lines) {
   const evs = Object.values(state.data?.plan?.evaluations?.[state.fcMonth] ?? {});
@@ -104,21 +105,25 @@ function renderKpis(lines) {
   const gmv = lines.reduce((s, l) => s + (l.units ?? 0) * (Number(l.price) || 0), 0);
   const cur = currentMonth();
   const om = overallModel(lines, itemBySku).totals;
+  // Hàng KPI thực tế tách riêng (chỉ tháng đang/đã chạy). Chưa có line nào nhập thực tế -> chỉ hiện tiến độ nhập, không hiện 3 ô gạch ngang.
   const actualKpis = cur && state.fcMonth <= cur ? [
     kpi(om.actualLines ? 'good' : 'warn', 'Đã nhập thực tế', `${fmtNum(om.actualLines)}/${fmtNum(lines.length)} line`, 'Số line đã có SL bán thực tế'),
-    kpi('', 'SL thực tế', om.actualLines ? fmtNum(om.actualUnits) : '–', 'Σ SL Main thực tế đã nhập'),
-    kpi('', 'GMV thực tế', om.actualLines ? fmtMoney(om.actualGmv) : '–', 'Ước tính: giá bán kế hoạch × SL thực tế (chưa có giá bán thực tế)'),
-    kpi('', '% đạt KH', om.planGmvOfActual > 0 ? fmtPct(om.actualGmv / om.planGmvOfActual) : '–', 'Chỉ tính các line có đủ cả SL dự kiến và SL thực tế: GMV thực tế ÷ GMV dự kiến'),
+    ...(om.actualLines ? [
+      kpi('', 'SL thực tế', fmtNum(om.actualUnits), 'Σ SL Main thực tế đã nhập'),
+      kpi('', 'GMV thực tế', fmtCompactMoney(om.actualGmv), `${fmtMoney(om.actualGmv)}\nƯớc tính: giá bán kế hoạch × SL thực tế (chưa có giá bán thực tế)`),
+      kpi('', '% đạt KH', om.planGmvOfActual > 0 ? fmtPct(om.actualGmv / om.planGmvOfActual) : '–', 'Chỉ tính các line có đủ cả SL dự kiến và SL thực tế: GMV thực tế ÷ GMV dự kiến'),
+    ] : []),
   ] : [];
+  $('fcKpisActual').replaceChildren(...actualKpis);
+  $('fcKpisActual').hidden = !actualKpis.length;
   $('fcKpis').replaceChildren(
     kpi('', 'Line', fmtNum(lines.length)),
     kpi('', 'SL Main dự kiến', fmtNum(units)),
-    kpi('', 'GMV dự kiến', fmtMoney(gmv), 'Σ Giá bán × SL dự kiến (chỉ line đã nhập SL)'),
-    kpi('', 'Tổng vốn quà dự kiến', fmtMoney(giftTotal), 'Σ SL dự kiến × vốn quà của từng line'),
+    kpi('', 'GMV dự kiến', fmtCompactMoney(gmv), `${fmtMoney(gmv)}\nΣ Giá bán × SL dự kiến (chỉ line đã nhập SL)`),
+    kpi('', 'Vốn quà dự kiến', fmtCompactMoney(giftTotal), `${fmtMoney(giftTotal)}\nΣ SL dự kiến × vốn quà của từng line`),
     kpi(over ? 'bad' : '', 'Line CIR Over', fmtNum(over)),
     kpi('bad', 'SKU thiếu / hết', fmtNum(evs.filter((e) => e.level === 'short' || e.level === 'out').length), 'SKU (Main + quà) có tồn thấp hơn nhu cầu tổng hợp của tháng'),
-    kpi('warn', 'SKU Nam thiếu', fmtNum(evs.filter((e) => (e.gapSouth ?? 0) > 0).length)),
-    ...actualKpis);
+    kpi('warn', 'SKU Nam thiếu', fmtNum(evs.filter((e) => (e.gapSouth ?? 0) > 0).length)));
 }
 
 // Nhắc nhập thực tế của tháng liền trước (để benchmark đầy đủ)
@@ -158,7 +163,7 @@ function renderLines(lines) {
       el('span', { class: 'gname', text: campaign }),
       el('span', { class: 'count', text: `${ls.length} line` }),
       campaign in DEFAULT_MAX_CIR ? el('span', { class: 'muted', text: `Max CIR ${fmtPct(DEFAULT_MAX_CIR[campaign])}` }) : null,
-      units > 0 ? el('span', { class: 'muted', text: `· SL ${fmtNum(units)} · GMV ${fmtMoney(gmv)}` }) : null,
+      units > 0 ? el('span', { class: 'muted', text: `· SL ${fmtNum(units)} · GMV ${fmtCompactMoney(gmv)}`, title: `GMV ${fmtMoney(gmv)}` }) : null,
       actUnits !== null ? el('span', { class: 'muted', text: `· Thực tế ${fmtNum(actUnits)}${planOfDone > 0 ? ` (${fmtPct(actUnits / planOfDone)} KH)` : ''}` }) : null));
     for (const l of ls) {
       nodes.push(lineCard(l, {
@@ -224,7 +229,7 @@ export function renderForecast() {
   $('fcLineTools').hidden = state.fcView !== 'lines';
 
   if (!all.length) {
-    $('fcKpis').replaceChildren(); $('fcNotice').replaceChildren();
+    $('fcKpis').replaceChildren(); $('fcKpisActual').replaceChildren(); $('fcKpisActual').hidden = true; $('fcNotice').replaceChildren();
     const go = el('button', { type: 'button', class: 'btn primary', text: 'Đi tới tab Plan' });
     go.addEventListener('click', () => { state.tab = 'plan'; hooks.render({ body: true }); });
     $('fcBody').replaceChildren(el('div', { class: 'empty-state' }, el('div', { class: 'big', text: 'Chưa có Forecast' }),

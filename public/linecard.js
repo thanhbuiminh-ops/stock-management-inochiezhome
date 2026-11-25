@@ -131,7 +131,7 @@ export function lineCard(line, opts = {}) {
     title: 'Số lượng Main (số deal) thực tế đã bán trong tháng. Để trống = chưa nhập; nhập 0 = đã chạy nhưng không bán được.',
     onValue: (v) => { line.actualUnits = v; changed(); },
   });
-  actualIn.placeholder = 'SL';
+  actualIn.placeholder = 'nhập SL';
   const actualRes = el('div', { class: 'st-row' });
   const actual = canActual ? el('div', { class: 'lc-strip lc-actual' },
     el('span', { class: 'st-lbl', title: 'Số deal Main thực tế đã bán trong tháng. Để trống = chưa nhập; nhập 0 = đã chạy nhưng không bán được.' },
