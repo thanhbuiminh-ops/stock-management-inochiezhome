@@ -18,6 +18,7 @@ export const hooks = { render() {}, reload: async () => {} };
 
 export const items = () => state.data?.snapshot?.items ?? [];
 export const alertMonth = () => state.data?.alertMonth ?? '';
+export const currentMonth = () => state.data?.currentMonth ?? '';
 export const forecastLines = () => state.data?.forecast?.lines ?? [];
 export const rules = () => state.data?.rules ?? { bufferPct: 20, southSharePct: 70 };
 

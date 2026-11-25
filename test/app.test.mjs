@@ -15,10 +15,12 @@ import { verifyData } from '../lib/session.mjs';
 import stock from '../netlify/functions/stock.mjs';
 import refresh from '../netlify/functions/refresh.mjs';
 import { parseSheet, parseNumber, SheetFormatError } from '../lib/sheet.mjs';
-import { nextMonthKey, evaluate, planRules, withPlanView } from '../lib/plan.mjs';
+import { nextMonthKey, currentMonthKey, evaluate, planRules, withPlanView } from '../lib/plan.mjs';
 import { applyOp, getForecast, sanitizeLine, demandByMonth, ForecastError } from '../lib/forecast.mjs';
 import forecastFn from '../netlify/functions/forecast.mjs';
 import * as L from '../public/logic.js';
+import * as X from '../public/xlsx.js';
+import * as E from '../public/export.js';
 import { sheetConfig, fetchSheetValues, ConfigError, GoogleError } from '../lib/google.mjs';
 import { getData } from '../lib/refresh.mjs';
 import gate, { config as gateConfig } from '../netlify/edge-functions/gate.mjs';
@@ -707,7 +709,175 @@ test('logic.overallModel: GMV deal combo chia cho từng SKU theo (SL × COGS); 
   assert.equal(Math.round(m2.bySku.reduce((s, x) => s + x.gmv, 0)), 4_000_000);
 });
 
-const PUBLIC_JS = ['api', 'app', 'filters', 'forecast', 'linecard', 'logic', 'overall', 'plan', 'state', 'ui', 'login'].map((n) => `public/${n}.js`);
+
+// ---------- SL thực tế + benchmark tháng trước ----------
+test('forecast: actualUnits — mặc định null, 0 hợp lệ, số âm/lẻ bị từ chối, lưu & sửa qua update', async () => {
+  assert.equal(sanitizeLine(line()).actualUnits, null);
+  assert.equal(sanitizeLine(line({ actualUnits: '' })).actualUnits, null);
+  assert.equal(sanitizeLine(line({ actualUnits: 0 })).actualUnits, 0);
+  assert.equal(sanitizeLine(line({ actualUnits: '37' })).actualUnits, 37);
+  for (const bad of [-1, 1.5, 'abc', 1e8]) assert.throws(() => sanitizeLine(line({ actualUnits: bad })), (e) => e instanceof ForecastError && e.status === 400);
+  await seedSnapshot();
+  const { created } = await applyOp({ op: 'add', lines: [line({ month: '2026-10' })] }, 'a');
+  assert.equal((await getForecast()).lines[0].actualUnits, null);
+  await applyOp({ op: 'update', id: created[0], rev: 1, line: line({ month: '2026-10', actualUnits: 87 }) }, 'a');
+  const l = (await getForecast()).lines[0];
+  assert.equal(l.actualUnits, 87); assert.equal(l.units, 100); assert.equal(l.rev, 2);
+});
+
+test('plan: currentMonthKey theo giờ VN; withPlanView trả currentMonth và bỏ cảnh báo tháng đã qua', () => {
+  assert.equal(currentMonthKey(Date.UTC(2026, 10, 23)), '2026-11');
+  assert.equal(currentMonthKey(Date.UTC(2026, 10, 30, 17, 30)), '2026-12', '00:30 ngày 1/12 giờ VN');
+  const data = { snapshot: { items: ITEMS } };
+  const mk = (month, id) => ({ ...line({ month }), campaign: 'BAU', id, rev: 1 });
+  const v = withPlanView(data, { rev: 1, lines: [mk('2026-10', 'a'), mk('2026-11', 'b'), mk('2026-12', 'c')] }, Date.UTC(2026, 10, 23), () => undefined);
+  assert.equal(v.currentMonth, '2026-11');
+  assert.deepEqual(v.plan.months, ['2026-11', '2026-12'], 'tháng 10 đã qua: không đánh giá tồn');
+  assert.equal(withPlanView({}, undefined, Date.UTC(2026, 10, 23), () => undefined).currentMonth, '2026-11');
+});
+
+test('logic.prevMonth: lùi 1 tháng, qua năm, đầu vào rác -> rỗng', () => {
+  assert.equal(L.prevMonth('2026-12'), '2026-11');
+  assert.equal(L.prevMonth('2027-01'), '2026-12');
+  assert.equal(L.prevMonth(''), ''); assert.equal(L.prevMonth('2026-13'), ''); assert.equal(L.prevMonth(undefined), '');
+});
+
+test('logic.benchmarkFor: cùng deal (ưu tiên cùng campaign) -> cùng SKU -> không có; tách theo channel; % đạt KH chỉ so line có đủ hai số', () => {
+  const mk = (o) => ({ id: Math.random().toString(36), month: '2026-10', channel: 'shopee', campaign: 'BAU', price: 100000, units: 100, actualUnits: null, main: { sku: 'A', qty: 1 }, combo: [], gifts: [], ...o });
+  const cur = mk({ id: 'cur', month: '2026-11', units: 150 });
+  // cùng deal: 2 campaign khác nhau; BAU được ưu tiên
+  const lines = [
+    mk({ actualUnits: 80 }),                                                    // BAU: 80/100
+    mk({ campaign: 'MINI SPIKE', price: 90000, actualUnits: 300, units: 200 }), // khác campaign -> bị bỏ khi đã có BAU
+    mk({ channel: 'tiktok', actualUnits: 999 }),                                 // channel khác -> không tính
+    mk({ month: '2026-09', actualUnits: 555 }),                                  // không phải tháng liền trước
+  ];
+  const b = L.benchmarkFor(cur, lines);
+  assert.equal(b.kind, 'deal'); assert.equal(b.prev, '2026-10'); assert.equal(b.sameCampaign, true);
+  assert.equal(b.actual, 80); assert.equal(b.gmv, 8_000_000); assert.equal(b.avgPrice, 100000);
+  assert.equal(b.planned, 100); assert.equal(b.pct, 0.8); assert.deepEqual(b.campaigns, ['BAU']);
+  // không có BAU -> gộp mọi campaign của deal, giá TB gia quyền
+  const b2 = L.benchmarkFor({ ...cur, campaign: 'FLASH' }, lines);
+  assert.equal(b2.sameCampaign, false); assert.equal(b2.actual, 380);
+  assert.equal(b2.gmv, 80 * 100000 + 300 * 90000); assert.equal(Math.round(b2.avgPrice), Math.round((8_000_000 + 27_000_000) / 380));
+  // line chưa nhập thực tế được đếm vào pending, không lẫn vào số liệu
+  const b3 = L.benchmarkFor(cur, [...lines, mk({ actualUnits: null })]);
+  assert.equal(b3.actual, 80); assert.equal(b3.pending, 1);
+  // deal khác (combo) nhưng cùng SKU Main -> benchmark theo SKU, tính theo số CÁI (SL deal × qty)
+  const comboPrev = mk({ main: { sku: 'A', qty: 2 }, actualUnits: 50, units: 40 });
+  const b4 = L.benchmarkFor(cur, [comboPrev]);
+  assert.equal(b4.kind, 'sku'); assert.equal(b4.actual, 100); assert.equal(b4.planned, 80); assert.equal(b4.pct, 1.25);
+  assert.deepEqual(b4.deals, ['A×2']);
+  // chưa có thực tế -> none + pending; không có gì -> none, pending 0
+  const b5 = L.benchmarkFor(cur, [mk({ actualUnits: null })]);
+  assert.equal(b5.kind, 'none'); assert.equal(b5.pending, 1);
+  assert.deepEqual([L.benchmarkFor(cur, []).kind, L.benchmarkFor(cur, []).pending], ['none', 0]);
+  // actual = 0 vẫn là dữ liệu thật ("đã chạy nhưng bán 0")
+  const b6 = L.benchmarkFor(cur, [mk({ actualUnits: 0 })]);
+  assert.equal(b6.kind, 'deal'); assert.equal(b6.actual, 0); assert.equal(b6.avgPrice, null);
+});
+
+test('logic.overallModel: GMV thực tế = giá KH × SL thực tế; % đạt KH chỉ so line có đủ KH + thực tế', () => {
+  const get = () => undefined;
+  const mk = (o) => ({ campaign: 'BAU', channel: 'shopee', price: 100000, units: 10, actualUnits: null, main: { sku: 'A' }, gifts: [{ sku: 'G', qty: 2, cost: 5000 }], ...o });
+  const m = L.overallModel([
+    mk({ actualUnits: 8 }),                    // KH 10 → TT 8
+    mk({ actualUnits: 15, price: 200000 }),    // KH 10 → TT 15
+    mk({ actualUnits: 5, units: null }),       // có thực tế nhưng chưa có KH: tính vào thực tế, không vào % đạt KH
+    mk(),                                      // chưa nhập thực tế
+  ], get).totals;
+  assert.equal(m.actualLines, 3); assert.equal(m.actualUnits, 28);
+  assert.equal(m.actualGmv, 8 * 100000 + 15 * 200000 + 5 * 100000);
+  assert.equal(m.planGmvOfActual, 10 * 100000 + 10 * 200000); assert.equal(m.planUnitsOfActual, 20);
+  assert.equal(m.actualGift, 28 * 2 * 5000);
+  assert.equal(m.missing, 1, 'line không có KH vẫn nằm trong "chưa có SL dự kiến"');
+});
+
+
+// ---------- Xuất Excel ----------
+// Đọc lại file .xlsx do writer tạo ra (ZIP store): kiểm tra CRC, tên part, rồi trả về nội dung từng part.
+function readZip(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), td = new TextDecoder();
+  let e = u8.length - 22; assert.equal(dv.getUint32(e, true), 0x06054b50, 'EOCD');
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true); const out = {};
+  for (let i = 0; i < n; i++) {
+    assert.equal(dv.getUint32(p, true), 0x02014b50);
+    const crc = dv.getUint32(p + 16, true), size = dv.getUint32(p + 24, true), nl = dv.getUint16(p + 28, true), off = dv.getUint32(p + 42, true);
+    const name = td.decode(u8.subarray(p + 46, p + 46 + nl));
+    assert.equal(dv.getUint32(off, true), 0x04034b50); const data = u8.subarray(off + 30 + dv.getUint16(off + 26, true), off + 30 + dv.getUint16(off + 26, true) + size);
+    assert.equal(X.crc32(data), crc, 'CRC ' + name); out[name] = td.decode(data); p += 46 + nl;
+  }
+  return out;
+}
+
+test('xlsx: ZIP hợp lệ (CRC), đủ part, escape XML, chuỗi luôn là text, tên sheet an toàn/không trùng', () => {
+  const u8 = X.buildXlsx([
+    { name: 'A/B:C?*[x]', rows: [['=SUM(1,1)', '+cmd', { v: 'a & <b> "q"', bold: true, fill: 'FFD966' }, 12, 0.5, null, { v: 0.123, fmt: 'pct1' }]] },
+    { name: 'A B C  x ', rows: [[1]] },
+    { name: 'a b c  x ', rows: [[2]] },
+  ]);
+  const z = readZip(u8);
+  for (const k of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml', 'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet3.xml']) assert.ok(k in z, k);
+  const names = [...z['xl/workbook.xml'].matchAll(/<sheet name="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(new Set(names.map((s) => s.toLowerCase())).size, 3, 'tên sheet không trùng');
+  assert.ok(names.every((s) => !/[\[\]:*?\/\\]/.test(s) && s.length <= 31));
+  const s1 = z['xl/worksheets/sheet1.xml'];
+  assert.match(s1, /t="inlineStr"><is><t xml:space="preserve">=SUM\(1,1\)<\/t>/, 'ô bắt đầu bằng = là text, không phải công thức');
+  assert.equal(/<f>/.test(s1), false);
+  assert.match(s1, /a &amp; &lt;b&gt; &quot;q&quot;/);
+  assert.match(s1, /<c r="D1"><v>12<\/v><\/c>/); assert.match(s1, /<c r="E1"><v>0.5<\/v><\/c>/);
+  assert.equal(/r="F1"/.test(s1), false, 'null = không có ô');
+  assert.match(z['xl/styles.xml'], /FFFFD966/); assert.match(z['xl/styles.xml'], /formatCode="0\.0%"/);
+  assert.equal(X.colName(0), 'A'); assert.equal(X.colName(25), 'Z'); assert.equal(X.colName(26), 'AA'); assert.equal(X.colName(701), 'ZZ'); assert.equal(X.colName(702), 'AAA');
+});
+
+test('xlsx: loại ký tự điều khiển không hợp lệ trong XML; NaN/Infinity thành ô trống', () => {
+  const z = readZip(X.buildXlsx([{ name: 'S', rows: [['a\u0000b\u0007c', NaN, Infinity, 5]] }]));
+  const s = z['xl/worksheets/sheet1.xml'];
+  assert.match(s, />abc</); assert.equal(/NaN|Infinity/.test(s), false); assert.match(s, /<c r="D1"><v>5<\/v><\/c>/);
+});
+
+const mkLine = (o) => ({ id: 'x', month: '2026-12', channel: 'shopee', campaign: 'BAU', price: 2075000, units: 100, actualUnits: null, maxCir: 0.04, main: { sku: 'A', qty: 1 }, combo: [], gifts: [], ...o });
+const ITEMS_X = { A: { sku: 'A', name: 'Nồi chiên 4L', cogs: 1_000_000 }, B: { sku: 'B', name: 'Chảo B', cogs: 200_000 }, G1: { sku: 'G1', name: 'Quà 1', cogs: 36166 }, G2: { sku: 'G2', name: 'Quà 2', cogs: 29000 } };
+
+test('export: bố cục Forecast theo mẫu Sheet — header, dải Campaign (BAU đầu), Main trước Gift, combo, tách theo channel', () => {
+  const lines = [
+    mkLine({ campaign: 'ACTION', gifts: [{ sku: 'G2', qty: 1, cost: 29000 }] }),
+    mkLine({ gifts: [{ sku: 'G1', qty: 2, cost: 36166 }, { sku: 'G2', qty: 1, cost: 29000 }] }),                       // CIR = 101.332 / 2.075.000 = 4,9% > 4% -> Over
+    mkLine({ main: { sku: 'A', qty: 2 }, combo: [{ sku: 'B', qty: 1 }], price: 4000000, gifts: [] }),                    // combo (BAU)
+    mkLine({ channel: 'tiktok', gifts: [] }),
+  ];
+  const sheets = E.forecastLayoutSheets(lines, (s) => ITEMS_X[s]);
+  assert.deepEqual(sheets.map((s) => s.name), ['Shopee', 'TikTok'], 'chỉ channel có line; Website bị bỏ');
+  const v = (c) => (c && typeof c === 'object' ? c.v : c);
+  const grid = sheets[0].rows.map((r) => r.map(v));
+  assert.deepEqual(grid[0], ['Campaign Type', 'Loại', 'Tên sản phẩm', 'Số lượng', 'RSP (Main)\nCOGS (Gift)', 'CIR', 'Max CIR', 'Status']);
+  assert.deepEqual(grid[1], ['BAU', '', '', '', '', '', '', ''], 'BAU luôn là dải đầu tiên');
+  assert.deepEqual(grid.slice(2, 5).map((r) => [r[1], r[2], r[3], r[4]]), [['Main', 'Nồi chiên 4L', 1, 2075000], ['Gift', 'Quà 1', 2, 36166], ['Gift', 'Quà 2', 1, 29000]]);
+  assert.equal(grid[2][7], 'Over'); assert.ok(Math.abs(grid[2][5] - 101332 / 2075000) < 1e-9); assert.equal(grid[2][6], 0.04);
+  // combo: Main đầu mang giá/CIR; SKU thêm là dòng Main chỉ có tên + SL
+  assert.deepEqual(grid.slice(5, 7).map((r) => [r[1], r[2], r[3], r[4]]), [['Main', 'Nồi chiên 4L', 2, 4000000], ['Main', 'Chảo B', 1, '']]);
+  assert.equal(grid[6][7], '');
+  const ci = grid.findIndex((r) => r[0] === 'ACTION' && r[1] === ''); assert.ok(ci > 6, 'campaign khác đứng sau BAU');
+  assert.equal(grid[ci + 1][7], 'Pass');
+  assert.ok(grid.every((r) => r.length === 8));
+  assert.equal(sheets[0].rows[2][7].fill, 'F8CBAD'); assert.equal(sheets[0].rows[ci + 1][7].fill, 'C6E0B4');
+  assert.equal(sheets[0].rows[1][0].fill, 'FFD966');
+  assert.deepEqual(sheets[1].rows.map((r) => r.map(v)).slice(1, 3).map((r) => r[0] + '/' + r[1]), ['BAU/', 'BAU/Main']);
+});
+
+test('export: sheet số liệu chi tiết giữ số thật + % đạt KH; workbook mở lại được', () => {
+  const lines = [mkLine({ actualUnits: 87, gifts: [{ sku: 'G1', qty: 2, cost: 36166 }] }), mkLine({ campaign: 'X', units: null })];
+  const sh = E.forecastFlatSheet(lines, (s) => ITEMS_X[s]);
+  const row = sh.rows[1].map((c) => c.v);
+  assert.equal(row[5], 2075000); assert.equal(row[6], 100); assert.equal(row[7], 207500000); assert.equal(row[14], 87); assert.equal(row[15], 0.87); assert.equal(row[16], 87 * 2075000);
+  assert.equal(sh.rows[2].map((c) => c.v)[7], '', 'chưa có KH -> không GMV dự kiến');
+  const z = readZip(E.forecastWorkbook(lines, (s) => ITEMS_X[s]));
+  assert.ok('xl/worksheets/sheet2.xml' in z && /autoFilter/.test(z['xl/worksheets/sheet2.xml']));
+  assert.match(z['xl/worksheets/sheet1.xml'], /state="frozen"/);
+});
+
+const PUBLIC_JS = ['api', 'app', 'export', 'filters', 'forecast', 'linecard', 'logic', 'overall', 'plan', 'state', 'ui', 'login', 'xlsx'].map((n) => `public/${n}.js`);
 test('frontend: mọi file JS đúng cú pháp module', async () => {
   for (const f of PUBLIC_JS) {
     const src = await readFile(new URL('../' + f, import.meta.url), 'utf8');

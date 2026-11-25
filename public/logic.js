@@ -221,14 +221,21 @@ export const channelLabel = (k) => CHANNELS.find((c) => c.key === k)?.label ?? k
 // GMV (dự kiến) = Giá bán × SL Main dự kiến. Quà tặng không có doanh thu, chỉ có vốn (SL × Σ qty×vốn).
 // "Lãi gộp sau quà" = Σ (Giá bán − COGS Main − vốn quà mỗi Main) × SL, CHƯA trừ phí sàn/ads/voucher; chỉ tính line có COGS Main.
 export function overallModel(lines, getItem) {
-  const t = { lines: lines.length, missing: 0, gmv: 0, units: 0, giftCost: 0, gmvCogs: 0, gross: 0, linesCogs: 0, combos: 0 };
+  const t = { lines: lines.length, missing: 0, gmv: 0, units: 0, giftCost: 0, gmvCogs: 0, gross: 0, linesCogs: 0, combos: 0,
+    actualLines: 0, actualUnits: 0, actualGmv: 0, actualGift: 0, planGmvOfActual: 0, planUnitsOfActual: 0 };
   const byChannel = {}, byCampaign = {}, bySku = {}, byCategory = {};
   const add = (map, key, init) => (map[key] ??= init());
   for (const l of lines) {
     const u = l.units;
-    if (!(u > 0)) { t.missing++; continue; }
     const price = Number(l.price) || 0;
     const ch = channelOf(l);
+    // Thực tế: GMV thực tế = Giá bán KẾ HOẠCH × SL thực tế (web chưa có giá bán thực tế). "% đạt KH" chỉ so các line có đủ cả hai.
+    if (Number.isInteger(l.actualUnits)) {
+      t.actualLines++; t.actualUnits += l.actualUnits; t.actualGmv += price * l.actualUnits;
+      t.actualGift += l.actualUnits * l.gifts.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.cost) || 0), 0);
+      if (u > 0) { t.planGmvOfActual += price * u; t.planUnitsOfActual += u; }
+    }
+    if (!(u > 0)) { t.missing++; continue; }
     const gmv = price * u;
     const perUnitGift = l.gifts.reduce((s, g) => s + (Number(g.qty) || 0) * (Number(g.cost) || 0), 0);
     const gift = perUnitGift * u;
@@ -258,4 +265,64 @@ export function overallModel(lines, getItem) {
   }
   const desc = (o) => Object.values(o).sort((a, b) => b.gmv - a.gmv);
   return { totals: t, byChannel: desc(byChannel), byCampaign: desc(byCampaign), bySku: desc(bySku), byCategory: desc(byCategory) };
+}
+
+
+// ---------- benchmark tháng trước ----------
+export const monthOf = (key) => { const [y, m] = String(key).split('-').map(Number); return { y, m }; };
+export function prevMonth(key) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(key ?? ''))) return '';
+  const { y, m } = monthOf(key);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+}
+const sumBy = (a, f) => a.reduce((s, x) => s + f(x), 0);
+
+// Benchmark cho một line (đang lập Plan hoặc đã lưu): lấy số bán THỰC TẾ của tháng liền trước, cùng channel.
+//  1) kind 'deal': cùng deal (cùng SKU & số lượng — dealLabel). Ưu tiên cùng Campaign; không có thì gộp mọi campaign của deal đó.
+//  2) kind 'sku': không có deal giống hệt -> tổng SL thực tế của SKU Main trong các deal khác của channel đó (tính theo số cái, = SL deal × qty).
+//  3) kind 'none': không có dữ liệu. `pending` = số line của tháng trước (cùng deal / SKU) chưa nhập thực tế.
+// GMV = giá bán kế hoạch × SL thực tế (assumption). `pct` = thực tế / kế hoạch của CHÍNH các line đó (chỉ line có cả hai).
+export function benchmarkFor(line, allLines) {
+  const prev = prevMonth(line?.month);
+  const base = { prev, kind: 'none', pending: 0 };
+  if (!prev || !line?.main?.sku) return base;
+  const ch = channelOf(line);
+  const pool = allLines.filter((l) => l.month === prev && channelOf(l) === ch && l.id !== line.id);
+  const label = dealLabel(line);
+  const same = pool.filter((l) => dealLabel(l) === label);
+  const withActual = (a) => a.filter((l) => Number.isInteger(l.actualUnits));
+  const camp = String(line.campaign ?? '').toUpperCase();
+  let use = withActual(same.filter((l) => l.campaign === camp));
+  let sameCampaign = use.length > 0;
+  if (!use.length) use = withActual(same);
+  if (use.length) {
+    const actual = sumBy(use, (l) => l.actualUnits);
+    const gmv = sumBy(use, (l) => (Number(l.price) || 0) * l.actualUnits);
+    const both = use.filter((l) => l.units > 0);
+    const planned = sumBy(both, (l) => l.units);
+    return {
+      prev, kind: 'deal', sameCampaign, lines: use.length, actual, gmv,
+      avgPrice: actual > 0 ? gmv / actual : null,
+      campaigns: [...new Set(use.map((l) => l.campaign))],
+      planned, pct: planned > 0 ? sumBy(both, (l) => l.actualUnits) / planned : null,
+      pending: same.length - withActual(same).length,
+    };
+  }
+  const sku = line.main.sku;
+  const touching = pool.filter((l) => componentsOf(l).some((c) => c.sku === sku));
+  const skuUse = withActual(touching);
+  if (skuUse.length) {
+    const qtyOf = (l) => componentsOf(l).find((c) => c.sku === sku).qty;
+    const pieces = sumBy(skuUse, (l) => l.actualUnits * qtyOf(l));
+    const both = skuUse.filter((l) => l.units > 0);
+    const plannedPieces = sumBy(both, (l) => l.units * qtyOf(l));
+    return {
+      prev, kind: 'sku', lines: skuUse.length, actual: pieces, sku,
+      deals: [...new Set(skuUse.map(dealLabel))],
+      campaigns: [...new Set(skuUse.map((l) => l.campaign))],
+      planned: plannedPieces, pct: plannedPieces > 0 ? sumBy(both, (l) => l.actualUnits * qtyOf(l)) / plannedPieces : null,
+      pending: touching.length - skuUse.length,
+    };
+  }
+  return { ...base, pending: touching.length };
 }

@@ -4,8 +4,10 @@ import { $, el, thumb, fmtTime, fmtNum, fmtMoney, fmtCompactMoney, monthLabel, L
 import { DEFAULT_MAX_CIR, componentsOf } from './logic.js';
 import { initPlan, renderPlan } from './plan.js';
 import { initFilters, renderFilters, matchItem, typeKey, categoryOf, levelOf, stockValue } from './filters.js';
-import { initForecast, renderForecast, forecastBusy, forecastCsv } from './forecast.js';
-import { initOverall, renderOverall, overallCsv } from './overall.js';
+import { XLSX_MIME, buildXlsx } from './xlsx.js';
+import { tableSheet } from './export.js';
+import { initForecast, renderForecast, forecastBusy, forecastXlsx } from './forecast.js';
+import { initOverall, renderOverall, overallXlsx } from './overall.js';
 
 const STALE_SEC = 15 * 60;   // website không đọc lại được Sheet quá ngưỡng này -> cảnh báo
 const POLL_MS = 30 * 1000;   // hỏi server mỗi 30s khi tab đang mở (server tự đọc lại Sheet khi đến hạn)
@@ -77,7 +79,7 @@ function renderChrome() {
   renderBanner(); renderFreshness();
   document.querySelectorAll('.tabs button').forEach((b) => { const on = b.dataset.tab === state.tab; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
   for (const t of ['stock', 'plan', 'forecast', 'overall']) $('tab-' + t).hidden = state.tab !== t;
-  $('csv').hidden = state.tab === 'plan';
+  $('xlsx').hidden = state.tab === 'plan';
   const camps = new Set([...Object.keys(DEFAULT_MAX_CIR), 'MINPRICE', ...forecastLines().map((l) => l.campaign)]);
   $('campaignList').replaceChildren(...[...camps].sort().map((c) => el('option', { value: c })));
 }
@@ -280,33 +282,29 @@ async function call(path, method, { force = false } = {}) {
 const load = (opts) => call('/api/stock', 'GET', opts);
 hooks.reload = (opts) => load(opts);
 
-// ---------- CSV (chặn CSV injection: ô bắt đầu bằng = + - @ bị thêm dấu ') ----------
-const csvCell = (v) => {
-  let s = String(v ?? '');
-  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-  return '"' + s.replace(/"/g, '""') + '"';
-};
-function download(name, rows) {
-  const blob = new Blob(['﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+// ---------- Xuất Excel (.xlsx) ----------
+function download(name, bytes) {
+  const blob = new Blob([bytes], { type: XLSX_MIME });
   const a = el('a', { href: URL.createObjectURL(blob), download: name });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
-function exportCsv() {
+function exportXlsx() {
   const day = new Date().toISOString().slice(0, 10);
-  if (state.tab === 'forecast') return download('forecast-' + state.fcMonth + '-' + day + '.csv', forecastCsv());
-  if (state.tab === 'overall') return download('overall-' + state.ov.month + '-' + day + '.csv', overallCsv());
-  const hasCost = !!state.data?.snapshot?.hasCost;
-  const head = ['SKU', 'Tên', 'Short Name', 'TYPE', 'Category', 'Kho Bắc', 'Kho Nam', 'Tổng', 'Nhu cầu ' + alertMonth(), 'Cảnh báo'];
-  if (hasCost) head.push('COGS', 'Giá trị tồn');
-  const rows = [head];
-  for (const it of visibleItems()) {
-    const ev = evalFor(it.sku, alertMonth());
-    const row = [it.sku, it.name, it.shortName, it.type, it.category, it.north, it.south, it.total, ev?.qty ?? '', ev ? LEVEL[ev.level].label + ': ' + alertText(it, ev) : ''];
-    if (hasCost) row.push(it.cogs, stockValue(it));
-    rows.push(row);
-  }
-  download('visual-stock-' + day + '.csv', rows);
+  try {
+    if (state.tab === 'forecast') return download('forecast-' + state.fcMonth + '-' + day + '.xlsx', forecastXlsx());
+    if (state.tab === 'overall') return download('overall-' + state.ov.month + '-' + day + '.xlsx', overallXlsx());
+    const hasCost = !!state.data?.snapshot?.hasCost;
+    const head = ['SKU', 'Tên', 'Short Name', 'TYPE', 'Category', 'Kho Bắc', 'Kho Nam', 'Tổng', 'Nhu cầu ' + alertMonth(), 'Cảnh báo'];
+    if (hasCost) head.push('COGS', 'Giá trị tồn');
+    const rows = visibleItems().map((it) => {
+      const ev = evalFor(it.sku, alertMonth());
+      const row = [it.sku, it.name, it.shortName, it.type, it.category, it.north, it.south, it.total, ev?.qty ?? '', ev ? LEVEL[ev.level].label + ': ' + alertText(it, ev) : ''];
+      if (hasCost) row.push(it.cogs ?? '', stockValue(it) ?? '');
+      return row;
+    });
+    download('visual-stock-' + day + '.xlsx', buildXlsx([tableSheet('Tồn kho', head, rows, { widths: [22, 44, 24, 10, 18, 10, 10, 10, 12, 44, 12, 15].slice(0, head.length) })]));
+  } catch (e) { toast?.('Không xuất được Excel: ' + (e?.message ?? e)); }
 }
 
 // Chiều cao thanh trên cùng (để các thanh dính bên dưới bám đúng vị trí; trên điện thoại thanh trên cùng không dính)
@@ -346,7 +344,7 @@ on('refresh', 'click', async () => {
   const ok = await call('/api/refresh', 'POST');
   if (!ok && forecastBusy()) toast('Đang có thay đổi chưa lưu ở Forecast — sẽ làm mới sau khi lưu xong.', 'info');
 });
-on('csv', 'click', exportCsv);
+on('xlsx', 'click', exportXlsx);
 on('logout', 'click', async () => {
   try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch { /* vẫn chuyển trang */ }
   location.href = '/login.html';

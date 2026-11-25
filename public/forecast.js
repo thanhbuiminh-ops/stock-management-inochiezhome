@@ -1,7 +1,9 @@
 // Tab Forecast: các line đã lưu. Sửa trực tiếp (đổi quà, giá, SL, campaign…), tự lưu sau khi ngừng gõ ~0,7 giây.
-import { state, items, itemBySku, alertMonth, forecastLines, evalFor, hooks } from './state.js';
+import { state, items, itemBySku, alertMonth, currentMonth, forecastLines, evalFor, hooks } from './state.js';
 import { $, el, thumb, toast, fmtNum, fmtMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, alertText, stockChips, skuButton, channelSegButtons, channelPill } from './ui.js';
-import { calcLine, DEFAULT_MAX_CIR, CHANNELS, channelOf, channelLabel, componentsOf, dealLabel } from './logic.js';
+import { buildXlsx } from './xlsx.js';
+import { tableSheet, forecastWorkbook } from './export.js';
+import { calcLine, DEFAULT_MAX_CIR, CHANNELS, channelOf, channelLabel, componentsOf, dealLabel, prevMonth, overallModel } from './logic.js';
 import { lineCard, lineIssues, clean, setLineStatus } from './linecard.js';
 import { postForecast } from './api.js';
 
@@ -60,6 +62,9 @@ async function removeLine(line) {
 }
 
 // ---------- dữ liệu hiển thị ----------
+// Nhãn tháng kèm trạng thái: đã chạy xong / đang chạy / tháng tới (theo giờ VN, do server tính)
+const monthState = (m) => { const c = currentMonth(); return !c ? '' : m < c ? ' (đã chạy)' : m === c ? ' (đang chạy)' : m === alertMonth() ? ' (tháng tới)' : ''; };
+
 const months = () => [...new Set(forecastLines().map((l) => l.month))].sort();
 
 function ensureMonth() {
@@ -97,6 +102,14 @@ function renderKpis(lines) {
   const giftTotal = lines.reduce((s, l) => s + (l.units ?? 0) * calcLine(l, itemBySku).giftCost, 0);
   const over = lines.filter((l) => calcLine(l, itemBySku).status === 'over').length;
   const gmv = lines.reduce((s, l) => s + (l.units ?? 0) * (Number(l.price) || 0), 0);
+  const cur = currentMonth();
+  const om = overallModel(lines, itemBySku).totals;
+  const actualKpis = cur && state.fcMonth <= cur ? [
+    kpi(om.actualLines ? 'good' : 'warn', 'Đã nhập thực tế', `${fmtNum(om.actualLines)}/${fmtNum(lines.length)} line`, 'Số line đã có SL bán thực tế'),
+    kpi('', 'SL thực tế', om.actualLines ? fmtNum(om.actualUnits) : '–', 'Σ SL Main thực tế đã nhập'),
+    kpi('', 'GMV thực tế', om.actualLines ? fmtMoney(om.actualGmv) : '–', 'Ước tính: giá bán kế hoạch × SL thực tế (chưa có giá bán thực tế)'),
+    kpi('', '% đạt KH', om.planGmvOfActual > 0 ? fmtPct(om.actualGmv / om.planGmvOfActual) : '–', 'Chỉ tính các line có đủ cả SL dự kiến và SL thực tế: GMV thực tế ÷ GMV dự kiến'),
+  ] : [];
   $('fcKpis').replaceChildren(
     kpi('', 'Line', fmtNum(lines.length)),
     kpi('', 'SL Main dự kiến', fmtNum(units)),
@@ -104,8 +117,25 @@ function renderKpis(lines) {
     kpi('', 'Tổng vốn quà dự kiến', fmtMoney(giftTotal), 'Σ SL dự kiến × vốn quà của từng line'),
     kpi(over ? 'bad' : '', 'Line CIR Over', fmtNum(over)),
     kpi('bad', 'SKU thiếu / hết', fmtNum(evs.filter((e) => e.level === 'short' || e.level === 'out').length), 'SKU (Main + quà) có tồn thấp hơn nhu cầu tổng hợp của tháng'),
-    kpi('warn', 'SKU Nam thiếu', fmtNum(evs.filter((e) => (e.gapSouth ?? 0) > 0).length)));
+    kpi('warn', 'SKU Nam thiếu', fmtNum(evs.filter((e) => (e.gapSouth ?? 0) > 0).length)),
+    ...actualKpis);
 }
+
+// Nhắc nhập thực tế của tháng liền trước (để benchmark đầy đủ)
+function renderNotice() {
+  const box = $('fcNotice');
+  const prev = prevMonth(state.fcMonth), cur = currentMonth();
+  const pl = forecastLines().filter((l) => l.month === prev && l.units > 0);
+  const miss = pl.filter((l) => !Number.isInteger(l.actualUnits)).length;
+  if (!prev || !cur || prev > cur || !miss) { box.replaceChildren(); return; }
+  const go = el('button', { type: 'button', class: 'btn sm', text: 'Mở ' + monthLabel(prev) + ' để nhập' });
+  go.addEventListener('click', () => { state.fcMonth = prev; hooks.render({ body: true, force: true }); });
+  box.replaceChildren(el('div', { class: 'note-warn fc-note' },
+    el('span', { text: `${monthLabel(prev)}${prev === cur ? ' đang chạy' : ' đã chạy xong'} nhưng còn ${miss}/${pl.length} line chưa nhập SL thực tế — benchmark cho ${monthLabel(state.fcMonth)} chưa đầy đủ. ` }), go));
+}
+
+// Cập nhật dải KPI ngay khi đang gõ (không dựng lại thẻ để không mất con trỏ)
+const refreshKpis = () => renderKpis(forecastLines().filter((l) => l.month === state.fcMonth));
 
 function renderLines(lines) {
   const body = $('fcBody');
@@ -120,16 +150,20 @@ function renderLines(lines) {
     const campaign = ls[0].campaign;
     const units = ls.reduce((s, l) => s + (l.units ?? 0), 0);
     const gmv = ls.reduce((s, l) => s + (l.units ?? 0) * (Number(l.price) || 0), 0);
+    const done = ls.filter((l) => Number.isInteger(l.actualUnits));
+    const actUnits = done.length ? done.reduce((s, l) => s + l.actualUnits, 0) : null;
+    const planOfDone = done.reduce((s, l) => s + (l.units ?? 0), 0);   // % đạt KH chỉ so các line đã có thực tế
     nodes.push(el('h3', { class: 'group ch-' + ch },
       channelPill(ch, channelLabel(ch)),
       el('span', { class: 'gname', text: campaign }),
       el('span', { class: 'count', text: `${ls.length} line` }),
       campaign in DEFAULT_MAX_CIR ? el('span', { class: 'muted', text: `Max CIR ${fmtPct(DEFAULT_MAX_CIR[campaign])}` }) : null,
-      units > 0 ? el('span', { class: 'muted', text: `· SL ${fmtNum(units)} · GMV ${fmtMoney(gmv)}` }) : null));
+      units > 0 ? el('span', { class: 'muted', text: `· SL ${fmtNum(units)} · GMV ${fmtMoney(gmv)}` }) : null,
+      actUnits !== null ? el('span', { class: 'muted', text: `· Thực tế ${fmtNum(actUnits)}${planOfDone > 0 ? ` (${fmtPct(actUnits / planOfDone)} KH)` : ''}` }) : null));
     for (const l of ls) {
       nodes.push(lineCard(l, {
         collapsed: state.fcCollapsed.has(l.id),
-        onChange: queueSave, onRemove: removeLine,
+        onChange: (line) => { queueSave(line); refreshKpis(); }, onRemove: removeLine,
         onToggle: (line, c) => { if (c) state.fcCollapsed.add(line.id); else state.fcCollapsed.delete(line.id); },
       }));
     }
@@ -170,7 +204,7 @@ export function renderForecast() {
   ensureMonth();
   const all = forecastLines();
   const sel = $('fcMonth');
-  sel.replaceChildren(...months().map((m) => el('option', { value: m, text: monthLabel(m) + (m === alertMonth() ? ' (tháng tới)' : '') })));
+  sel.replaceChildren(...months().map((m) => el('option', { value: m, text: monthLabel(m) + monthState(m) })));
   sel.value = state.fcMonth;
   const campaigns = [...new Set(all.filter((l) => l.month === state.fcMonth).map((l) => l.campaign))].sort();
   if (state.fcCampaign && !campaigns.includes(state.fcCampaign)) state.fcCampaign = '';
@@ -185,11 +219,12 @@ export function renderForecast() {
     onPick: (k) => { state.fcChannel = k; hooks.render({ body: true, force: true }); },
   }));
   $('fcChannel').hidden = state.fcView === 'sku';
+  renderNotice();
   document.querySelectorAll('[data-fcview]').forEach((b) => b.classList.toggle('on', b.dataset.fcview === state.fcView));
   $('fcLineTools').hidden = state.fcView !== 'lines';
 
   if (!all.length) {
-    $('fcKpis').replaceChildren();
+    $('fcKpis').replaceChildren(); $('fcNotice').replaceChildren();
     const go = el('button', { type: 'button', class: 'btn primary', text: 'Đi tới tab Plan' });
     go.addEventListener('click', () => { state.tab = 'plan'; hooks.render({ body: true }); });
     $('fcBody').replaceChildren(el('div', { class: 'empty-state' }, el('div', { class: 'big', text: 'Chưa có Forecast' }),
@@ -200,7 +235,7 @@ export function renderForecast() {
   renderKpis(forecastLines().filter((l) => l.month === state.fcMonth));
   if (state.fcView === 'sku') {
     const rows = skuRows();
-    if (!rows.length) $('fcBody').replaceChildren(el('p', { class: 'muted center', text: 'Chưa có SKU nào có nhu cầu (cần nhập SL dự kiến cho các line).' }));
+    if (!rows.length) $('fcBody').replaceChildren(el('p', { class: 'muted center', text: currentMonth() && state.fcMonth < currentMonth() ? 'Tháng đã chạy xong: web không đánh giá tồn cho tháng đã qua (tồn hiện tại không còn liên quan). Xem số thực tế ở dạng Line.' : 'Chưa có SKU nào có nhu cầu (cần nhập SL dự kiến cho các line).' }));
     else renderSkuTable(rows);
     return;
   }
@@ -208,19 +243,15 @@ export function renderForecast() {
   renderLines(lines);
 }
 
-// ---------- xuất CSV ----------
-export function forecastCsv() {
+// ---------- xuất Excel ----------
+// Dạng Line: bố cục như Sheet Pricing Frame (mỗi channel 1 sheet) + sheet số liệu chi tiết. Dạng SKU: 1 bảng phẳng.
+export function forecastXlsx() {
   if (state.fcView === 'sku') {
-    return [['Tháng', 'SKU', 'Tên', 'Vai trò', 'Nhu cầu', 'Main', 'Quà', 'Tồn tổng', 'MB', 'MN', 'MN cần', 'Cảnh báo'],
-      ...skuRows().map(({ it, ev }) => [state.fcMonth, it.sku, it.name, ev.gift > 0 ? (ev.main > 0 ? 'Main + Quà' : 'Quà') : 'Main', ev.qty, ev.main, ev.gift, it.total, it.north, it.south, ev.needSouth, LEVEL[ev.level].label + ': ' + alertText(it, ev)])];
+    return buildXlsx([tableSheet('Theo SKU', ['Tháng', 'SKU', 'Tên', 'Vai trò', 'Nhu cầu', 'Main', 'Quà', 'Tồn tổng', 'MB', 'MN', 'MN cần', 'Cảnh báo'],
+      skuRows().map(({ it, ev }) => [state.fcMonth, it.sku, it.name, ev.gift > 0 ? (ev.main > 0 ? 'Main + Quà' : 'Quà') : 'Main', ev.qty, ev.main, ev.gift, it.total, it.north, it.south, ev.needSouth, LEVEL[ev.level].label + ': ' + alertText(it, ev)]),
+      { widths: [10, 22, 44, 12, 9, 9, 9, 10, 9, 9, 9, 40] })]);
   }
-  return [['Tháng', 'Channel', 'Campaign', 'SKU Main (deal)', 'Sản phẩm trong deal', 'Giá bán', 'SL dự kiến', 'Số quà', 'Vốn quà', 'CIR', 'Max CIR', 'Trạng thái CIR', 'Chi tiết quà (SKU×SL@vốn)'],
-    ...visibleLines().map((l) => {
-      const c = calcLine(l, itemBySku);
-      return [l.month, channelLabel(channelOf(l)), l.campaign, dealLabel(l), componentsOf(l).map((c) => itemBySku(c.sku)?.name ?? c.sku).join(' + ') || l.main.srcName, l.price, l.units ?? '', l.gifts.length, c.giftCost,
-        c.cir === null ? '' : (c.cir * 100).toFixed(2) + '%', c.maxCir === null ? '' : (c.maxCir * 100).toFixed(2) + '%', c.status,
-        l.gifts.map((g) => `${g.sku}×${g.qty}@${g.cost}`).join('; ')];
-    })];
+  return forecastWorkbook(visibleLines(), itemBySku);
 }
 
 export function initForecast() {

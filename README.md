@@ -19,7 +19,7 @@ Trình duyệt ──cookie đăng nhập──> Edge gate ───────
 - Cột được đọc theo **tên tiêu đề** (không theo vị trí): Master SKU, TYPE, Boxme Bắc, Boxme Nam (bắt buộc); Link Ảnh, Product Name, Short Name, Category, COGS, Total Stock_BM, Status Boxme_Bắc, Status Boxme_Nam (tuỳ chọn). Đổi tên tiêu đề → web báo lỗi rõ ràng.
 - COGS và "Giá trị tồn" **hiện mặc định cho mọi tài khoản đã đăng nhập**. Đặt `INCLUDE_COST=false` để ẩn (khi đó COGS không được gửi xuống trình duyệt).
 - Cột Status của Sheet **không còn được đọc**; cảnh báo tính từ Forecast (mục dưới).
-- **Forecast KHÔNG nằm trong Google Sheet**: nó được nhập/sửa trên web và lưu trong Netlify Blobs (web không ghi ngược vào Sheet). Nếu cần backup, dùng nút CSV ở tab Forecast.
+- **Forecast KHÔNG nằm trong Google Sheet**: nó được nhập/sửa trên web và lưu trong Netlify Blobs (web không ghi ngược vào Sheet). Nếu cần backup, dùng nút **Xuất Excel** ở tab Forecast.
 
 ## Plan → Forecast (nhập kế hoạch bán hàng)
 **Tab Plan**
@@ -84,6 +84,31 @@ Một line = một **deal**: SKU Main × `SL/deal` + (tuỳ chọn) các SKU kh�
 - **Overall:** GMV deal có nhiều SKU được chia cho từng SKU theo tỉ lệ (SL × COGS), thiếu COGS thì theo số lượng. Đây là cách phân bổ để xem theo SKU/category; tổng GMV, channel, campaign không đổi.
 - Dán từ Sheet **chưa nhận diện combo** (mỗi dòng Main vẫn là một line riêng); sau khi dán, gộp thêm SKU ngay trên thẻ line.
 - Line cũ không có SL/deal hay combo được hiểu là 1 SKU × 1.
+
+## SL thực tế & benchmark tháng trước
+
+- **Nhập thực tế:** ở tab Forecast, mỗi line của tháng đang chạy / đã chạy xong có ô **SL thực tế** (số deal Main đã bán). Tự lưu như các ô khác. Để trống = chưa nhập; **0 = đã chạy nhưng không bán được**. Tháng tương lai không có ô này.
+- Thẻ hiện **% đạt KH** (thực tế ÷ dự kiến), **GMV thực tế** và **vốn quà thực tế**. GMV thực tế = *giá bán kế hoạch × SL thực tế* (web chưa có giá bán thực tế → đây là ước tính). Vốn quà thực tế giả định quà phát đúng cơ cấu kế hoạch.
+- Thực tế và benchmark hiển thị thành **dải 1 dòng** (cao ~35px) trong thẻ; rê chuột vào từng chỉ số để xem cách tính. Trên điện thoại dải tự xuống 2 dòng.
+- **Benchmark:** khi lập Plan (tab Plan) hoặc xem line của tháng tới, mỗi thẻ có dải **Benchmark T-1** lấy số thực tế của tháng liền trước **cùng channel**:
+  1. cùng deal (cùng SKU và số lượng; ưu tiên cùng Campaign, không có thì gộp mọi campaign của deal đó) → thực bán, GMV, giá TB gia quyền, % đạt KH tháng đó, chênh của KH hiện tại so với thực tế, nút **“Dùng X làm SL dự kiến”**;
+  2. không có deal giống hệt → tổng số **cái** SKU Main bán qua các deal khác (chỉ để tham khảo, không có nút dùng);
+  3. không có → báo rõ “chưa có dữ liệu” hoặc “có N line chưa nhập thực tế”.
+- Banner ở tab Forecast nhắc khi tháng liền trước còn line chưa nhập thực tế. Tab **Overall** thêm KPI GMV thực tế / SL thực tế / % đạt KH khi xem tháng đã/đang chạy. File Excel Forecast có thêm cột thực tế.
+- Tháng **đã qua** không còn bị đánh giá tồn/cảnh báo (tồn hiện tại không liên quan tới kế hoạch đó). Tháng “đang chạy / đã chạy / tháng tới” tính theo giờ Việt Nam.
+
+## Xuất Excel (.xlsx)
+
+Nút **Xuất Excel** (thay cho CSV) xuất theo tab đang xem và theo bộ lọc hiện tại:
+
+- **Forecast (dạng Line):** mỗi channel 1 sheet (Shopee / TikTok / Website, chỉ sheet có dữ liệu) theo đúng cấu trúc Sheet Pricing Frame:
+  `Campaign Type | Loại | Tên sản phẩm | Số lượng | RSP (Main) / COGS (Gift) | CIR | Max CIR | Status`.
+  Mỗi Campaign là một dải vàng (BAU luôn đứng đầu), mỗi deal gồm dòng **Main** rồi các dòng **Gift**; Status tô cam (Over) / xanh (Pass).
+  Deal combo: dòng Main đầu mang RSP/CIR/Status của cả deal, các SKU gộp thêm là dòng Main tiếp theo (chỉ tên + số lượng).
+  Thêm sheet cuối **Số liệu chi tiết** (mỗi line một hàng: SL dự kiến, GMV, SL thực tế, % đạt KH…) để lọc/pivot.
+- **Forecast (dạng SKU), Overall, Tồn kho:** một bảng phẳng có bộ lọc và cố định dòng tiêu đề.
+- Số xuất ra là **số thật** (sắp xếp/tính tổng được), phần trăm là định dạng %. Chuỗi luôn là text nên ô bắt đầu bằng `=`/`+`/`-`/`@` không bị Excel hiểu thành công thức.
+- File được tạo ngay trên trình duyệt bằng bộ ghi tự viết (`public/xlsx.js`), không thêm thư viện, không gửi dữ liệu đi đâu.
 
 ## Cài đặt (làm 1 lần)
 

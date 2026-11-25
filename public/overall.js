@@ -1,6 +1,8 @@
 // Tab Overall: tổng hợp Forecast của một tháng theo channel / campaign / category / SKU, đặt cạnh tồn kho.
 // GMV dự kiến = Giá bán × SL dự kiến (chỉ line đã nhập SL). Dữ liệu tồn lấy từ Sheet (cập nhật hàng tuần).
-import { state, itemBySku, alertMonth, forecastLines, evalFor, hooks } from './state.js';
+import { buildXlsx } from './xlsx.js';
+import { tableSheet } from './export.js';
+import { state, itemBySku, alertMonth, currentMonth, forecastLines, evalFor, hooks } from './state.js';
 import { $, el, thumb, fmtNum, fmtMoney, fmtCompactMoney, fmtPct, monthLabel, LEVEL, ALERT_LEVELS, skuButton, channelPill } from './ui.js';
 import { CHANNELS, channelOf, overallModel, norm, componentsOf } from './logic.js';
 
@@ -71,6 +73,15 @@ function renderKpis(m) {
     kpi('', '%GM sau quà', fmtPct(gm), 'Σ (Giá bán − COGS − vốn quà) × SL ÷ GMV, chỉ line có COGS Main. Chưa trừ phí sàn, ads, voucher.',
       t.linesCogs < t.lines - t.missing ? `chỉ ${fmtNum(t.linesCogs)} line có COGS` : null),
   ];
+  // Thực tế: chỉ khi tháng đang xem đã/đang chạy và có line đã nhập SL thực tế
+  const cur = currentMonth();
+  if (cur && ov().month && ov().month <= cur) {
+    const ach = t.planGmvOfActual > 0 ? t.actualGmv / t.planGmvOfActual : null;
+    out.push(
+      kpi(t.actualLines ? 'big good' : 'warn', 'GMV thực tế', t.actualLines ? fmtCompactMoney(t.actualGmv) : '–', 'Ước tính = giá bán kế hoạch × SL thực tế (web chưa có giá bán thực tế)', `${fmtNum(t.actualLines)}/${fmtNum(t.lines)} line đã nhập thực tế`),
+      kpi('', 'SL thực tế', t.actualLines ? fmtNum(t.actualUnits) : '–', 'Σ SL Main thực tế đã nhập'),
+      kpi(ach !== null && ach >= 1 ? 'good' : '', '% đạt KH', fmtPct(ach), 'GMV thực tế ÷ GMV dự kiến, chỉ tính line có đủ cả hai số', ach === null ? null : `trên ${fmtNum(t.planUnitsOfActual)} deal có KH`));
+  }
   $('ovKpis').replaceChildren(...out);
 }
 
@@ -181,7 +192,7 @@ function renderSkuTable(m) {
 function renderFilters() {
   const f = ov();
   const ml = monthLines();
-  $('ovMonth').replaceChildren(...months().map((m) => el('option', { value: m, text: monthLabel(m) + (m === alertMonth() ? ' (tháng tới)' : '') })));
+  $('ovMonth').replaceChildren(...months().map((m) => el('option', { value: m, text: monthLabel(m) + (currentMonth() ? (m < currentMonth() ? ' (đã chạy)' : m === currentMonth() ? ' (đang chạy)' : m === alertMonth() ? ' (tháng tới)' : '') : '') })));
   $('ovMonth').value = f.month;
 
   // channel: nhiều lựa chọn (bấm để bật/tắt); đếm theo các bộ lọc khác
@@ -237,11 +248,12 @@ export function renderOverall() {
   renderSkuTable(m);
 }
 
-export function overallCsv() {
+export function overallXlsx() {
   const lines = monthLines().filter((l) => matches(l));
   const m = overallModel(lines, itemBySku);
   const head = ['Tháng', 'SKU', 'Tên', 'GMV', ...CHANNELS.map((c) => 'GMV ' + c.label), 'SL bán', 'Nhu cầu kho (mọi channel)', 'Tồn MB', 'Tồn MN', 'Tồn tổng', 'Cảnh báo'];
-  return [head, ...skuRows(m).map(({ s, it, ev }) => [ov().month, s.sku, it?.name ?? '', s.gmv, ...CHANNELS.map((c) => s.by[c.key] ?? 0), s.units, ev?.qty ?? '', it?.north ?? '', it?.south ?? '', it?.total ?? '', ev ? LEVEL[ev.level].label : ''])];
+  const rows = skuRows(m).map(({ s, it, ev }) => [ov().month, s.sku, it?.name ?? '', s.gmv, ...CHANNELS.map((c) => s.by[c.key] ?? 0), s.units, ev?.qty ?? '', it?.north ?? '', it?.south ?? '', it?.total ?? '', ev ? LEVEL[ev.level].label : '']);
+  return buildXlsx([tableSheet('Overall ' + ov().month, head, rows, { widths: [10, 22, 44, 15, ...CHANNELS.map(() => 15), 10, 14, 9, 9, 10, 18] })]);
 }
 
 export function initOverall() {

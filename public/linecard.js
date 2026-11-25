@@ -2,8 +2,8 @@
 // Dùng chung cho Plan (nháp, chưa lưu) và Forecast (đã lưu, sửa trực tiếp, tự lưu).
 // Bố cục: [thẻ màu theo trạng thái] → hàng nhãn (channel · campaign · tháng) → sản phẩm + ô NHẬP → ô KẾT QUẢ (tính tự động) → quà tặng.
 import { el, thumb, picker, numberInput, stockChips, fmtMoney, fmtPct, fmtNum, monthLabel } from './ui.js';
-import { itemBySku, evalFor } from './state.js';
-import { calcLine, defaultMaxCir, CHANNELS, channelOf, isCombo } from './logic.js';
+import { itemBySku, evalFor, forecastLines, currentMonth } from './state.js';
+import { calcLine, defaultMaxCir, CHANNELS, channelOf, isCombo, benchmarkFor, channelLabel } from './logic.js';
 
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -20,7 +20,7 @@ export function lineIssues(line) {
 
 // Chỉ gửi đúng các trường server nhận (bỏ trường tạm như conf, score)
 export const clean = (l) => ({
-  month: l.month, channel: channelOf(l), campaign: String(l.campaign).trim().toUpperCase(), price: l.price, units: l.units, maxCir: l.maxCir ?? null,
+  month: l.month, channel: channelOf(l), campaign: String(l.campaign).trim().toUpperCase(), price: l.price, units: l.units, actualUnits: l.actualUnits ?? null, maxCir: l.maxCir ?? null,
   main: { sku: l.main.sku, srcName: l.main.srcName ?? '', qty: Math.max(1, l.main.qty ?? 1) },
   combo: (l.combo ?? []).map((c) => ({ sku: c.sku, srcName: c.srcName ?? '', qty: Math.max(1, c.qty ?? 1) })),
   gifts: l.gifts.map((g) => ({ sku: g.sku, srcName: g.srcName ?? '', qty: g.qty, cost: g.cost })),
@@ -32,6 +32,10 @@ export function setLineStatus(id, text, kind = '') {
 }
 
 const field = (label, ...kids) => el('label', { class: 'lc-field' }, el('span', { class: 'lc-lbl', text: label }), ...kids);
+// Số tiền gọn cho dải benchmark/thực tế (chi tiết đầy đủ nằm trong tooltip)
+const mny = (v) => { const a = Math.abs(v), f = (x, d) => new Intl.NumberFormat('vi-VN', { maximumFractionDigits: d }).format(x);
+  return a >= 1e9 ? f(v / 1e9, 2) + ' tỷ' : a >= 1e6 ? f(v / 1e6, 1) + ' tr' : fmtNum(Math.round(v)); };
+const stat = (label, value, cls = '', title = '') => el('span', { class: 'st ' + cls, title }, el('i', { text: label }), value ? el('b', { text: value }) : null);
 const metric = (cls, label, value, sub, title) => el('div', { class: 'mt ' + cls, title: title || '' },
   el('span', { class: 'mt-l', text: label }), el('span', { class: 'mt-v', text: value }), sub ? el('span', { class: 'mt-s', text: sub }) : null);
 
@@ -119,6 +123,24 @@ export function lineCard(line, opts = {}) {
 
   const body = el('div', { class: 'lc-main' }, comps, inputs, metrics);
 
+  // --- THỰC TẾ (chỉ line đã lưu, tháng đang chạy hoặc đã qua) ---
+  const cur = currentMonth();
+  const canActual = !staged && !!cur && !!line.month && line.month <= cur;
+  const actualIn = numberInput({
+    value: line.actualUnits ?? null, allowNull: true, max: 1e7, cls: 'small',
+    title: 'Số lượng Main (số deal) thực tế đã bán trong tháng. Để trống = chưa nhập; nhập 0 = đã chạy nhưng không bán được.',
+    onValue: (v) => { line.actualUnits = v; changed(); },
+  });
+  actualIn.placeholder = 'SL';
+  const actualRes = el('div', { class: 'st-row' });
+  const actual = canActual ? el('div', { class: 'lc-strip lc-actual' },
+    el('span', { class: 'st-lbl', title: 'Số deal Main thực tế đã bán trong tháng. Để trống = chưa nhập; nhập 0 = đã chạy nhưng không bán được.' },
+      'Thực tế', el('small', { text: line.month === cur ? ' (đang chạy)' : '' })),
+    actualIn, actualRes) : null;
+
+  // --- BENCHMARK: số bán thực tế của tháng trước (staged luôn có; line đã lưu từ tháng hiện tại trở đi) ---
+  const bench = staged || (!!cur && line.month >= cur) ? el('div', { class: 'lc-strip lc-bench' }) : null;
+
   // --- quà tặng ---
   const gifts = el('div', { class: 'lc-gifts' });
   if (line.gifts.length) {
@@ -173,6 +195,8 @@ export function lineCard(line, opts = {}) {
         ? metric(c.afterGifts < 0 ? 'bad' : '', 'Sau quà', fmtMoney(c.afterGifts), fmtPct(c.afterGiftsPct), 'Giá bán − COGS Main − vốn quà. Chưa trừ phí sàn, ads, voucher.')
         : metric('mute', 'Sau quà', '–', line.price > 0 ? '' : 'nhập giá bán'));
 
+    paintActual(c);
+    paintBench();
     comboTag.hidden = !isCombo(line);
     comboTag.textContent = line.combo.length ? `COMBO ${1 + line.combo.length} SKU` : `COMBO ×${line.main.qty}`;
     const issues = lineIssues(line);
@@ -185,7 +209,55 @@ export function lineCard(line, opts = {}) {
     card.classList.toggle('invalid', staged && issues.length > 0);
   }
 
-  card.append(top, body, gifts, foot);
+  function paintActual(c) {
+    if (!actual) return;
+    const a = line.actualUnits;
+    if (!Number.isInteger(a)) { actualRes.replaceChildren(el('span', { class: 'st-hint', text: 'chưa nhập — để so với KH và làm benchmark tháng sau' })); return; }
+    const price = Number(line.price) || 0;
+    const pct = line.units > 0 ? a / line.units : null;
+    actualRes.replaceChildren(...[
+      stat(pct === null ? 'chưa có KH' : '% đạt KH', pct === null ? '' : fmtPct(pct), pct !== null && pct >= 1 ? 'good' : '', pct === null ? '' : `Thực tế ${fmtNum(a)} ÷ KH ${fmtNum(line.units)} (${a - line.units >= 0 ? '+' : '−'}${fmtNum(Math.abs(a - line.units))} deal)`),
+      price > 0 ? stat('GMV', mny(price * a), '', 'Ước tính: giá bán kế hoạch × SL thực tế (web chưa có giá bán thực tế)') : null,
+      stat('Vốn quà', mny(c.giftCost * a), '', `${fmtNum(a)} deal × ${fmtMoney(c.giftCost)} (giả định quà phát đúng cơ cấu kế hoạch)`),
+    ].filter(Boolean));
+  }
+
+  function paintBench() {
+    if (!bench) return;
+    const b = benchmarkFor({ ...line, channel: channelOf(line) }, forecastLines());
+    const ch = channelLabel(channelOf(line));
+    const head = (scope, tip) => el('span', { class: 'st-lbl', title: tip || '' }, 'Benchmark ' + (b.prev ? monthLabel(b.prev) : ''), el('small', { text: scope ? ' · ' + scope : '' }));
+    bench.classList.toggle('empty', b.kind === 'none');
+    if (b.kind === 'none') {
+      bench.replaceChildren(head(ch), el('span', { class: 'st-hint', text: b.pending
+        ? `${b.pending} line tháng trước chưa nhập SL thực tế`
+        : 'chưa có dữ liệu thực tế (deal mới hoặc chưa chạy)' }));
+      return;
+    }
+    const unit = b.kind === 'sku' ? 'cái' : 'deal';
+    const scope = b.kind === 'deal' ? `cùng deal · ${b.campaigns.join(', ')}${b.sameCampaign ? '' : ' (khác campaign)'}` : 'cùng SKU, deal khác';
+    const tip = b.kind === 'deal'
+      ? `Số thực tế của deal giống hệt trên ${ch}${b.lines > 1 ? ` (gộp ${b.lines} line)` : ''}`
+      : `Không có deal giống hệt. Tổng số cái SKU Main đã bán qua: ${b.deals.join(' · ')} (${ch})`;
+    const d = line.units > 0 && b.actual > 0 ? line.units / b.actual - 1 : null;
+    const use = b.kind === 'deal' && line.units !== b.actual
+      ? el('button', { type: 'button', class: 'btn sm', text: `Dùng ${fmtNum(b.actual)}`, title: `Lấy ${fmtNum(b.actual)} (số bán thực tế tháng trước) làm SL dự kiến — vẫn sửa được` }) : null;
+    use?.addEventListener('click', () => { line.units = b.actual; rebuild(); });
+    bench.replaceChildren(...[
+      head(scope, tip),
+      el('span', { class: 'st-row' }, ...[
+        stat('Bán', `${fmtNum(b.actual)} ${unit}`, '', tip),
+        b.kind === 'deal' && b.avgPrice != null ? stat('GMV', mny(b.gmv), '', 'Ước tính: giá bán kế hoạch × SL thực tế') : null,
+        b.kind === 'deal' && b.avgPrice != null ? stat('Giá TB', mny(b.avgPrice), '', 'Giá bán bình quân gia quyền theo SL thực tế') : null,
+        b.pct !== null ? stat('% đạt KH', fmtPct(b.pct), b.pct >= 1 ? 'good' : '', `Tháng đó kế hoạch ${fmtNum(b.planned)} ${unit}, bán ${fmtNum(b.actual)}`) : null,
+        d !== null ? stat('KH này', (d >= 0 ? '+' : '−') + fmtPct(Math.abs(d)), '', `SL dự kiến hiện tại ${fmtNum(line.units)} deal so với thực tế ${fmtNum(b.actual)} ${unit} tháng trước`) : null,
+        b.pending ? el('span', { class: 'st-warn', text: `⚠ ${b.pending} chưa nhập`, title: `Còn ${b.pending} line liên quan tháng trước chưa nhập thực tế nên số này có thể thấp hơn thật` }) : null,
+      ].filter(Boolean)),
+      use,
+    ].filter(Boolean));
+  }
+
+  card.append(top, body, ...(actual ? [actual] : []), ...(bench ? [bench] : []), gifts, foot);
   paint();
   if (!staged && line.updatedBy) status.textContent = `Cập nhật bởi ${line.updatedBy}`;
   return card;
